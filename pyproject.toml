@@ -1,7 +1,7 @@
 [project]
-name = "robot-lead-agent"
-version = "0.1.0"
-description = "机器人产品线索智能体测试版"
+name = "robot-company-discovery-agent"
+version = "0.2.0"
+description = "国内外机器人重点企业发现智能体测试版"
 requires-python = ">=3.11"
 dependencies = [
   "apscheduler>=3.10,<4",
