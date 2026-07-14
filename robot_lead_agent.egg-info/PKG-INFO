@@ -1,0 +1,21 @@
+Metadata-Version: 2.4
+Name: robot-lead-agent
+Version: 0.1.0
+Summary: 机器人产品线索智能体测试版
+Requires-Python: >=3.11
+Requires-Dist: apscheduler<4,>=3.10
+Requires-Dist: beautifulsoup4>=4.12
+Requires-Dist: fastapi>=0.115
+Requires-Dist: httpx>=0.27
+Requires-Dist: pandas>=2.2
+Requires-Dist: psycopg[binary]>=3.2
+Requires-Dist: pydantic-settings>=2.6
+Requires-Dist: python-dateutil>=2.9
+Requires-Dist: requests>=2.32
+Requires-Dist: sqlalchemy>=2.0
+Requires-Dist: streamlit>=1.40
+Requires-Dist: uvicorn[standard]>=0.32
+Provides-Extra: dynamic
+Requires-Dist: playwright>=1.49; extra == "dynamic"
+Provides-Extra: test
+Requires-Dist: pytest>=8.3; extra == "test"

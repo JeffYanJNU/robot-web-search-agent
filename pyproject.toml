@@ -1,0 +1,27 @@
+[project]
+name = "robot-lead-agent"
+version = "0.1.0"
+description = "机器人产品线索智能体测试版"
+requires-python = ">=3.11"
+dependencies = [
+  "apscheduler>=3.10,<4",
+  "beautifulsoup4>=4.12",
+  "fastapi>=0.115",
+  "httpx>=0.27",
+  "pandas>=2.2",
+  "psycopg[binary]>=3.2",
+  "pydantic-settings>=2.6",
+  "python-dateutil>=2.9",
+  "requests>=2.32",
+  "sqlalchemy>=2.0",
+  "streamlit>=1.40",
+  "uvicorn[standard]>=0.32",
+]
+
+[project.optional-dependencies]
+dynamic = ["playwright>=1.49"]
+test = ["pytest>=8.3"]
+
+[tool.pytest.ini_options]
+pythonpath = ["."]
+testpaths = ["tests"]
