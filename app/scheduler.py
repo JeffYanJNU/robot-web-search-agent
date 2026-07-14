@@ -4,15 +4,15 @@ from apscheduler.schedulers.background import BackgroundScheduler
 
 from app.config import Settings
 from app.database import SessionLocal
-from app.services.pipeline import LeadPipeline
+from app.services.pipeline import CompanyDiscoveryPipeline
 
 logger = logging.getLogger(__name__)
 
 
 def scheduled_run(settings: Settings) -> None:
     with SessionLocal() as db:
-        result = LeadPipeline(settings).run(db, settings.default_lookback_days, 12)
-        logger.info("Scheduled lead run finished: %s", result.model_dump())
+        result = CompanyDiscoveryPipeline(settings).run(db, settings.default_lookback_days, 16)
+        logger.info("Scheduled company discovery finished: %s", result.model_dump())
 
 
 def create_scheduler(settings: Settings) -> BackgroundScheduler | None:
@@ -25,10 +25,9 @@ def create_scheduler(settings: Settings) -> BackgroundScheduler | None:
         hour=settings.schedule_hour,
         minute=settings.schedule_minute,
         args=[settings],
-        id="daily_robot_leads",
+        id="daily_robot_company_discovery",
         replace_existing=True,
         max_instances=1,
     )
     scheduler.start()
     return scheduler
-

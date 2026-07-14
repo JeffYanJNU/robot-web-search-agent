@@ -6,11 +6,12 @@ os.environ["DATABASE_URL"] = "sqlite+pysqlite:///:memory:"
 from sqlalchemy import create_engine, select
 from sqlalchemy.orm import Session
 
+from app.config import Settings
 from app.database import Base
-from app.models import Lead
-from app.services.extractor import ExtractedLead
+from app.models import RobotCompany
+from app.services.extractor import ExtractedCompanyCandidate
 from app.services.fetcher import Page
-from app.services.pipeline import LeadPipeline
+from app.services.pipeline import CompanyDiscoveryPipeline
 
 
 def make_page(url: str, digest: str) -> Page:
@@ -18,48 +19,82 @@ def make_page(url: str, digest: str) -> Page:
     return Page(url, "测试标题", "测试正文" * 100, now, digest, now)
 
 
-def test_save_merges_second_source_and_rescores():
+def make_candidate(url: str) -> ExtractedCompanyCandidate:
+    return ExtractedCompanyCandidate(
+        original_name="Figure AI, Inc.",
+        canonical_name="Figure AI",
+        country="United States",
+        region_type="foreign",
+        official_website="https://www.figure.ai",
+        robot_categories=["人形机器人"],
+        representative_products=["Figure 02"],
+        business_summary="开发通用人形机器人。",
+        discovery_signal="融资",
+        evidence_date=date(2026, 7, 14),
+        robot_relevance=95,
+        has_robot_product=True,
+        has_commercial_progress=True,
+        is_priority_category=True,
+        source_url=url,
+    )
+
+
+def test_save_merges_by_official_domain_and_adds_second_source():
     engine = create_engine("sqlite+pysqlite:///:memory:")
     Base.metadata.create_all(engine)
-    item = ExtractedLead(
-        company_name="测试机器人公司",
-        product_name="R1",
-        robot_category="人形机器人",
-        event_type="新产品发布",
-        event_date=date(2026, 7, 14),
-        product_status="发布",
-        summary="测试公司发布 R1。",
-        source_url="https://robot.ofweek.com/news/1",
-        confidence=80,
+    settings = Settings(
+        database_url="sqlite+pysqlite:///:memory:",
+        min_robot_relevance=70,
+        min_priority_score=60,
+        auto_verify_score=80,
     )
 
     with Session(engine) as db:
-        assert LeadPipeline._save(db, make_page(item.source_url, "a" * 64), item) is True
-        db.commit()
-        item.source_url = "https://example.gov.cn/news/2"
-        assert LeadPipeline._save(db, make_page(item.source_url, "b" * 64), item) is False
+        first = make_candidate("https://figure.ai/news/1")
+        assert CompanyDiscoveryPipeline._save(db, make_page(first.source_url, "a" * 64), first, settings) == "created"
         db.commit()
 
-        lead = db.scalar(select(Lead))
-        assert lead is not None
-        assert len(lead.sources) == 2
-        assert lead.confidence == 80
-        assert lead.review_status == "accepted"
+        second = make_candidate("https://reuters.com/technology/figure-ai")
+        second.official_website = "https://figure.ai/"
+        assert CompanyDiscoveryPipeline._save(db, make_page(second.source_url, "b" * 64), second, settings) == "updated"
+        db.commit()
+
+        company = db.scalar(select(RobotCompany))
+        assert company is not None
+        assert company.official_domain == "figure.ai"
+        assert len(company.sources) == 2
+        assert company.priority_score == 100
+        assert company.verification_status == "verified"
 
 
-def test_extracted_lead_accepts_nullable_optional_fields():
-    lead = ExtractedLead.model_validate({
-        "company_name": "测试公司",
-        "product_name": None,
-        "robot_category": None,
-        "event_type": "融资",
-        "event_date": "2026-07-14",
-        "product_status": None,
-        "summary": None,
-        "source_url": "https://example.com/news",
-        "confidence": 60,
-    })
-    assert lead.product_name == ""
-    assert lead.robot_category == "其他"
-    assert lead.product_status == "未知"
-    assert lead.summary == ""
+def test_low_relevance_candidate_is_rejected():
+    engine = create_engine("sqlite+pysqlite:///:memory:")
+    Base.metadata.create_all(engine)
+    settings = Settings(database_url="sqlite+pysqlite:///:memory:", min_robot_relevance=70)
+    candidate = make_candidate("https://example.com/news")
+    candidate.robot_relevance = 40
+
+    with Session(engine) as db:
+        assert CompanyDiscoveryPipeline._save(db, make_page(candidate.source_url, "c" * 64), candidate, settings) == "rejected"
+        assert db.scalar(select(RobotCompany)) is None
+
+
+def test_candidate_accepts_nullable_optional_fields():
+    candidate = ExtractedCompanyCandidate.model_validate(
+        {
+            "original_name": "测试机器人公司",
+            "canonical_name": "测试机器人公司",
+            "chinese_name": None,
+            "english_name": None,
+            "country": None,
+            "official_website": None,
+            "robot_categories": None,
+            "representative_products": None,
+            "business_summary": None,
+            "discovery_signal": None,
+            "robot_relevance": 80,
+        }
+    )
+    assert candidate.chinese_name == ""
+    assert candidate.official_website == ""
+    assert candidate.robot_categories == []
