@@ -6,7 +6,15 @@ import streamlit as st
 
 API = os.getenv("API_BASE_URL", "http://localhost:8000").rstrip("/")
 STATUS_LABELS = {"verified": "已核验", "needs_review": "待审核", "rejected": "已排除"}
-ADDITION_TYPES = ["新注册企业", "存量企业新增机器人业务", "首次公开曝光", "已有企业新增产品"]
+ADDITION_TYPES = [
+    "系统首次发现", "新注册企业", "存量企业新增机器人业务",
+    "首次公开曝光", "已有企业新增产品",
+]
+EVIDENCE_LABELS = {
+    "registration": "成立/注册", "product_launch": "产品发布",
+    "mass_production": "量产", "funding": "融资", "delivery": "交付",
+    "order": "订单", "new_business": "新增业务", "official_identity": "主体身份",
+}
 REGION_LABELS = {
     "mainland_china": "中国内地",
     "hong_kong": "中国香港",
@@ -307,13 +315,36 @@ with st.sidebar:
         16,
         help="任务会预留部分查询额度，根据发现企业的证据缺口自动追加搜索。",
     )
+    search_mode = st.selectbox(
+        "搜索执行方式",
+        ["native", "gpt_researcher", "hybrid"],
+        format_func=lambda value: {
+            "native": "内置搜索", "gpt_researcher": "GPT Researcher",
+            "hybrid": "两者并行补充",
+        }[value],
+        help="GPT Researcher 仅执行检索；证据缺口和补搜仍由 EvidenceGapPlanner 决定。",
+    )
+    search_providers = st.multiselect(
+        "搜索源（并行）", ["tavily", "bing"], default=["tavily"],
+        format_func=lambda value: value.title(),
+    )
     active = initial_run["status"] in {"running", "pausing", "paused"}
-    if st.button("启动新任务", type="primary", use_container_width=True, disabled=active):
+    if not search_providers:
+        st.caption("至少选择一个搜索源后才能启动。")
+    if st.button(
+        "启动新任务", type="primary", use_container_width=True,
+        disabled=active or not search_providers,
+    ):
         try:
             api_request(
                 "POST",
                 "/runs/start",
-                json={"lookback_days": days, "max_queries": max_queries},
+                json={
+                    "lookback_days": days,
+                    "max_queries": max_queries,
+                    "search_mode": search_mode,
+                    "search_providers": search_providers,
+                },
             )
             st.success("任务已在后台启动")
             st.rerun()
@@ -469,6 +500,8 @@ def live_run_panel() -> None:
         ("更新", "updated"),
         ("排除", "rejected"),
         ("跳过", "skipped"),
+        ("内容未变", "refreshed"),
+        ("重新抽取", "reextracted"),
         ("数据库重复", "database_duplicates"),
         ("AI 名称翻译", "ai_translations"),
     ]
@@ -572,6 +605,12 @@ else:
             f'- [{source["source_title"] or source["source_url"]}]({source["source_url"]})'
             f' · {source["source_type"]}'
         )
+        if source.get("search_providers"):
+            st.caption("　发现渠道：" + "、".join(source["search_providers"]))
+        for evidence in source.get("evidence", []):
+            label = EVIDENCE_LABELS.get(evidence["evidence_type"], evidence["evidence_type"])
+            detail = f'（{evidence["value"]}）' if evidence.get("value") else ""
+            st.caption(f'　证据 · {label}{detail}：{evidence["quote"]}')
 
 st.divider()
 st.subheader("数据库相似重复候选")

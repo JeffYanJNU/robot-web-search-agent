@@ -8,8 +8,8 @@ from sqlalchemy.orm import Session
 
 from app.config import Settings
 from app.database import Base
-from app.models import RobotCompany
-from app.services.extractor import ExtractedCompanyCandidate
+from app.models import CompanyEvidence, CompanySource, RobotCompany
+from app.services.extractor import ExtractedCompanyCandidate, FieldEvidence
 from app.services.fetcher import Page
 from app.services.pipeline import CompanyDiscoveryPipeline
 from app.services.search import SearchResult
@@ -39,6 +39,14 @@ def make_candidate(url: str) -> ExtractedCompanyCandidate:
         has_commercial_progress=True,
         is_priority_category=True,
         source_url=url,
+        field_evidence=[
+            FieldEvidence(
+                evidence_type="product_launch",
+                quote="企业正式发布新一代机器人产品。",
+                value="测试二号",
+                evidence_date=date(2026, 7, 14),
+            )
+        ],
     )
 
 
@@ -66,7 +74,7 @@ def test_save_merges_by_official_domain_and_adds_second_source():
         assert company is not None
         assert company.official_domain == "testrobot.cn"
         assert len(company.sources) == 2
-        assert company.priority_score == 90
+        assert company.priority_score == 100
         assert company.verification_status == "verified"
 
 
@@ -179,8 +187,71 @@ def test_pipeline_executes_adaptive_followup_queries():
         assert company is not None
         assert len(company.sources) == 2
         assert company.verification_status == "verified"
+        evidence = db.scalar(select(CompanyEvidence))
+        assert evidence is not None
+        assert evidence.quote == "企业正式发布新一代机器人产品。"
 
     assert result.queries == 3
     assert result.planned_followups == 2
     assert pipeline.search.queries[1].adaptive is True
     assert "测试机器人科技有限公司" in pipeline.search.queries[1].text
+
+
+def test_unchanged_url_is_checked_but_not_reextracted():
+    engine = create_engine("sqlite+pysqlite:///:memory:")
+    Base.metadata.create_all(engine)
+    settings = Settings(database_url="sqlite+pysqlite:///:memory:")
+    url = "https://news.example.com/unchanged"
+    item = make_candidate(url)
+    page = make_page(url, "z" * 64)
+
+    class FakeSearch:
+        last_errors = []
+
+        def search(self, _query):
+            return [SearchResult("同一页面", url, providers=("native:tavily",))]
+
+    class FakeFetcher:
+        def fetch(self, _url):
+            return page
+
+    class CountingExtractor:
+        calls = 0
+
+        def extract(self, _page):
+            self.calls += 1
+            return [item]
+
+        def try_translate_english_name(self, _candidate, _page):
+            return ""
+
+    class EmptyBaseline:
+        def match(self, *_args, **_kwargs):
+            return None
+
+    extractor = CountingExtractor()
+
+    def make_pipeline():
+        pipeline = object.__new__(CompanyDiscoveryPipeline)
+        pipeline.settings = settings
+        pipeline.search = FakeSearch()
+        pipeline.fetcher = FakeFetcher()
+        pipeline.extractor = extractor
+        pipeline.baseline = EmptyBaseline()
+        return pipeline
+
+    with Session(engine) as db:
+        first = make_pipeline().run(db, lookback_days=14, max_queries=2)
+        assert first.created == 1
+        assert extractor.calls == 1
+        second = make_pipeline().run(db, lookback_days=14, max_queries=2)
+        assert second.refreshed == 1
+        assert extractor.calls == 1
+        source = db.scalar(select(CompanySource))
+        assert source is not None
+        assert source.search_providers == '["native:tavily"]'
+        source.extractor_prompt_version = "old-prompt"
+        db.commit()
+        third = make_pipeline().run(db, lookback_days=14, max_queries=2)
+        assert third.reextracted == 1
+        assert extractor.calls == 2

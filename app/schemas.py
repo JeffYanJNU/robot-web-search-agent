@@ -1,5 +1,6 @@
 import json
 from datetime import date, datetime
+from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
@@ -7,6 +8,17 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator
 class RunRequest(BaseModel):
     lookback_days: int = Field(default=14, ge=1, le=90)
     max_queries: int = Field(default=16, ge=2, le=60)
+    search_mode: Literal["native", "gpt_researcher", "hybrid"] | None = None
+    search_providers: list[Literal["tavily", "bing"]] | None = Field(default=None, min_length=1)
+
+
+class EvidenceOut(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+    evidence_id: int
+    evidence_type: str
+    quote: str
+    value: str
+    evidence_date: date | None
 
 
 class SourceOut(BaseModel):
@@ -17,6 +29,23 @@ class SourceOut(BaseModel):
     source_type: str
     published_at: datetime | None
     fetched_at: datetime
+    last_checked_at: datetime | None
+    extractor_prompt_version: str
+    search_providers: list[str]
+    evidence: list[EvidenceOut] = Field(default_factory=list)
+
+    @field_validator("search_providers", mode="before")
+    @classmethod
+    def parse_search_providers(cls, value: object) -> list[str]:
+        if isinstance(value, list):
+            return [str(item) for item in value]
+        if not value:
+            return []
+        try:
+            parsed = json.loads(str(value))
+        except json.JSONDecodeError:
+            return [item.strip() for item in str(value).split(",") if item.strip()]
+        return [str(item) for item in parsed] if isinstance(parsed, list) else []
 
 
 class CompanyOut(BaseModel):
@@ -43,6 +72,9 @@ class CompanyOut(BaseModel):
     registration_date: date | None
     evidence_date: date | None
     robot_relevance: int
+    has_robot_product: bool
+    has_commercial_progress: bool
+    is_priority_category: bool
     priority_score: int
     verification_status: str
     verification_reason: str
@@ -75,6 +107,8 @@ class RunResult(BaseModel):
     updated: int = 0
     rejected: int = 0
     skipped: int = 0
+    refreshed: int = 0
+    reextracted: int = 0
     baseline_duplicates: int = 0
     database_duplicates: int = 0
     ai_translations: int = 0

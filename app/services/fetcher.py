@@ -19,13 +19,14 @@ class Page:
     published_at: datetime | None
     content_hash: str
     fetched_at: datetime
+    discovery_providers: tuple[str, ...] = ()
 
 
 class PageFetcher:
     def __init__(self, settings: Settings):
         self.settings = settings
 
-    def fetch(self, url: str) -> Page:
+    def fetch(self, url: str, discovery_providers: tuple[str, ...] = ()) -> Page:
         try:
             html = self._http(url)
         except (httpx.HTTPStatusError, httpx.TransportError):
@@ -37,7 +38,10 @@ class PageFetcher:
             page = self._parse(url, self._playwright(url))
         if len(page.content) < 100:
             raise ValueError("正文过短，无法可靠抽取")
-        return page
+        return Page(
+            page.url, page.title, page.content, page.published_at, page.content_hash,
+            page.fetched_at, discovery_providers,
+        )
 
     def _http(self, url: str) -> str:
         headers = {"User-Agent": "Mozilla/5.0 RobotLeadAgent/0.1"}

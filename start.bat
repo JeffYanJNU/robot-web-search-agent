@@ -6,7 +6,7 @@ set "PROJECT_PYTHON=%CD%\.venv\Scripts\python.exe"
 
 if not exist "%PROJECT_PYTHON%" (
     echo [ERROR] Virtual environment not found: .venv
-    echo Run: python -m venv .venv ^&^& .venv\Scripts\python.exe -m pip install -e ".[test]"
+    echo Run: python -m venv .venv ^&^& .venv\Scripts\python.exe -m pip install -e ".[test,research]"
     pause
     exit /b 1
 )

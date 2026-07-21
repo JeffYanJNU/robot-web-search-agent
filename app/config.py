@@ -14,6 +14,8 @@ class Settings(BaseSettings):
     llm_json_mode: bool = True
     model_config_path: str = "model_configs.json"
     search_provider: str = "tavily"
+    search_mode: str = "native"
+    search_providers: str = "tavily"
     tavily_api_key: str = ""
     bing_api_key: str = ""
     bing_endpoint: str = "https://api.bing.microsoft.com/v7.0/search"

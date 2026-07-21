@@ -58,6 +58,8 @@ def calculate_priority_score(
     has_commercial_progress: bool,
     is_priority_category: bool,
     source_count: int = 1,
+    source_types: set[str] | None = None,
+    independent_source_count: int | None = None,
 ) -> int:
     score = 0
     if normalize_domain(official_website):
@@ -70,9 +72,14 @@ def calculate_priority_score(
         score += 20
     if has_commercial_progress:
         score += 15
-    if source_kind(source_url, official_website) in {"official", "authority"}:
+    if ((source_types or set()) & {"official", "authority"}) or source_kind(
+        source_url, official_website
+    ) in {"official", "authority"}:
         score += 10
-    if source_count >= 2:
+    effective_source_count = (
+        independent_source_count if independent_source_count is not None else source_count
+    )
+    if effective_source_count >= 2:
         score += 10
     if is_priority_category:
         score += 10

@@ -19,7 +19,7 @@ def ensure_schema_compatibility() -> None:
     """Add test-version columns without requiring Alembic for an existing database."""
     additions_by_table = {
         "robot_companies": {
-            "addition_type": "VARCHAR(40) NOT NULL DEFAULT '首次公开曝光'",
+            "addition_type": "VARCHAR(40) NOT NULL DEFAULT '系统首次发现'",
             "baseline_matched": "BOOLEAN NOT NULL DEFAULT FALSE",
             "baseline_company_name": "VARCHAR(255) NOT NULL DEFAULT ''",
             "classification_reason": "TEXT NOT NULL DEFAULT ''",
@@ -27,9 +27,21 @@ def ensure_schema_compatibility() -> None:
             "registration_date": "DATE",
             "ai_translated_name": "VARCHAR(255) NOT NULL DEFAULT ''",
             "verification_reason": "TEXT NOT NULL DEFAULT ''",
+            "has_robot_product": "BOOLEAN NOT NULL DEFAULT FALSE",
+            "has_commercial_progress": "BOOLEAN NOT NULL DEFAULT FALSE",
+            "is_priority_category": "BOOLEAN NOT NULL DEFAULT FALSE",
+        },
+        "company_sources": {
+            "last_checked_at": "DATETIME",
+            "last_extracted_at": "DATETIME",
+            "extractor_prompt_version": "VARCHAR(64) NOT NULL DEFAULT ''",
+            "search_providers": "TEXT NOT NULL DEFAULT '[]'",
         },
         "duplicate_company_matches": {
             "candidate_ai_translated_name": "VARCHAR(255) NOT NULL DEFAULT ''",
+            "content_hash": "VARCHAR(64) NOT NULL DEFAULT ''",
+            "extractor_prompt_version": "VARCHAR(64) NOT NULL DEFAULT ''",
+            "last_checked_at": "DATETIME",
         },
     }
     with engine.begin() as connection:

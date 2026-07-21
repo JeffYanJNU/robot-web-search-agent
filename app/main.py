@@ -6,16 +6,30 @@ from sqlalchemy.orm import Session, selectinload
 
 from app.config import get_settings
 from app.database import Base, SessionLocal, engine, ensure_schema_compatibility, get_db
-from app.models import CompanySource, DuplicateCompanyMatch, RobotCompany
+from app.models import CompanyEvidence, CompanySource, DuplicateCompanyMatch, RobotCompany
 from app.run_manager import RunManager, build_current_analysis
 from app.scheduler import create_scheduler
 from app.schemas import ClearDatabaseRequest, CompanyOut, DuplicateMatchOut, RunRequest, RunResult
 from app.services.model_config import ModelConfigInput, ModelConfigStore
-from app.services.pipeline import CompanyDiscoveryPipeline, apply_verification_decision
+from app.services.pipeline import (
+    CompanyDiscoveryPipeline,
+    apply_verification_decision,
+    recalculate_company_priority,
+)
 
 settings = get_settings()
 run_manager = RunManager()
 model_store = ModelConfigStore(settings)
+
+
+def settings_for_run(request: RunRequest):
+    active = model_store.active_settings()
+    updates: dict[str, str] = {}
+    if request.search_mode:
+        updates["search_mode"] = request.search_mode
+    if request.search_providers:
+        updates["search_providers"] = ",".join(request.search_providers)
+    return active.model_copy(update=updates)
 
 
 @asynccontextmanager
@@ -27,6 +41,7 @@ async def lifespan(_: FastAPI):
             db.scalars(select(RobotCompany).options(selectinload(RobotCompany.sources))).unique()
         )
         for company in companies:
+            recalculate_company_priority(company, list(company.sources))
             apply_verification_decision(company, list(company.sources), settings)
         db.commit()
     scheduler = create_scheduler(settings, model_store)
@@ -45,7 +60,7 @@ def health() -> dict[str, str]:
 
 @app.post("/runs", response_model=RunResult)
 def run_pipeline(request: RunRequest, db: Session = Depends(get_db)) -> RunResult:
-    return CompanyDiscoveryPipeline(model_store.active_settings()).run(
+    return CompanyDiscoveryPipeline(settings_for_run(request)).run(
         db, request.lookback_days, request.max_queries
     )
 
@@ -53,7 +68,7 @@ def run_pipeline(request: RunRequest, db: Session = Depends(get_db)) -> RunResul
 @app.post("/runs/start")
 def start_pipeline(request: RunRequest) -> dict:
     try:
-        return run_manager.start(model_store.active_settings(), request.lookback_days, request.max_queries)
+        return run_manager.start(settings_for_run(request), request.lookback_days, request.max_queries)
     except RuntimeError as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
 
@@ -147,7 +162,9 @@ def list_companies(
     offset: int = Query(default=0, ge=0),
     db: Session = Depends(get_db),
 ) -> list[RobotCompany]:
-    stmt = select(RobotCompany).options(selectinload(RobotCompany.sources)).order_by(
+    stmt = select(RobotCompany).options(
+        selectinload(RobotCompany.sources).selectinload(CompanySource.evidence)
+    ).order_by(
         RobotCompany.priority_score.desc(), RobotCompany.created_at.desc()
     )
     if status:
@@ -172,7 +189,7 @@ def list_companies(
 def get_company(company_id: int, db: Session = Depends(get_db)) -> RobotCompany:
     company = db.scalar(
         select(RobotCompany)
-        .options(selectinload(RobotCompany.sources))
+        .options(selectinload(RobotCompany.sources).selectinload(CompanySource.evidence))
         .where(RobotCompany.company_id == company_id)
     )
     if company is None:
@@ -208,9 +225,11 @@ def clear_local_database(
         "companies": db.scalar(select(func.count()).select_from(RobotCompany)) or 0,
         "sources": db.scalar(select(func.count()).select_from(CompanySource)) or 0,
         "duplicates": db.scalar(select(func.count()).select_from(DuplicateCompanyMatch)) or 0,
+        "evidence": db.scalar(select(func.count()).select_from(CompanyEvidence)) or 0,
     }
     try:
         db.execute(delete(DuplicateCompanyMatch))
+        db.execute(delete(CompanyEvidence))
         db.execute(delete(CompanySource))
         db.execute(delete(RobotCompany))
         db.commit()

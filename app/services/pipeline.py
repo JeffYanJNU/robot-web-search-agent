@@ -1,18 +1,23 @@
 import json
+import hashlib
 import re
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import date, datetime, timedelta, timezone
 from typing import Protocol
 
-from sqlalchemy import select
+from sqlalchemy import delete, select
 from sqlalchemy.orm import Session
 
 from app.config import Settings
-from app.models import CompanySource, DuplicateCompanyMatch, RobotCompany
+from app.models import CompanyEvidence, CompanySource, DuplicateCompanyMatch, RobotCompany
 from app.schemas import RunResult
 from app.services.baseline import BaselineMatch, BaselineRegistry, get_baseline_registry, normalize_company_name
-from app.services.database_matcher import DatabaseCompanyMatch, find_database_duplicate
-from app.services.extractor import DeepSeekCompanyExtractor, ExtractedCompanyCandidate
+from app.services.database_matcher import DatabaseCompanyIndex, DatabaseCompanyMatch
+from app.services.extractor import (
+    EXTRACTOR_PROMPT_VERSION,
+    DeepSeekCompanyExtractor,
+    ExtractedCompanyCandidate,
+)
 from app.services.fetcher import Page, PageFetcher
 from app.services.planner import EvidenceGapPlanner
 from app.services.scoring import (
@@ -35,6 +40,34 @@ class AdditionClassification:
     addition_type: str
     baseline_match: BaselineMatch | None
     reason: str
+
+
+def recalculate_company_priority(
+    company: RobotCompany,
+    sources: list[CompanySource],
+) -> None:
+    """Recompute the score from the complete company and source set."""
+    for source in sources:
+        source.source_type = source_kind(source.source_url, company.official_website)
+    independent_domains = {
+        domain for source in sources if (domain := normalize_domain(source.source_url))
+    }
+    try:
+        stored_products = json.loads(company.representative_products or "[]")
+    except json.JSONDecodeError:
+        stored_products = []
+    company.has_robot_product = company.has_robot_product or bool(stored_products)
+    company.priority_score = calculate_priority_score(
+        source_url=sources[0].source_url if sources else "",
+        official_website=company.official_website,
+        robot_relevance=company.robot_relevance,
+        has_robot_product=company.has_robot_product,
+        has_commercial_progress=company.has_commercial_progress,
+        is_priority_category=company.is_priority_category,
+        source_count=len(sources),
+        source_types={source.source_type for source in sources},
+        independent_source_count=len(independent_domains),
+    )
 
 
 def auto_verification_gaps(
@@ -126,16 +159,20 @@ def classify_addition(
     )
     if match is None:
         recent_cutoff = date.today() - timedelta(days=lookback_days)
-        is_new_registration = (
-            item.addition_type_hint == "新注册企业"
-            or item.discovery_signal == "新成立"
-            or bool(item.registration_date and item.registration_date >= recent_cutoff)
+        has_registration_quote = any(
+            evidence.evidence_type == "registration" and evidence.quote.strip()
+            for evidence in item.field_evidence
         )
-        addition_type = "新注册企业" if is_new_registration else "首次公开曝光"
-        reason = item.classification_evidence or (
-            "未在 Excel 基线中匹配，且存在近期工商成立证据"
+        is_new_registration = bool(
+            item.registration_date
+            and item.registration_date >= recent_cutoff
+            and has_registration_quote
+        )
+        addition_type = "新注册企业" if is_new_registration else "系统首次发现"
+        reason = (
+            item.classification_evidence or "未在 Excel 基线中匹配，且有成立日期原文证据"
             if is_new_registration
-            else "未在 Excel 基线中匹配，作为首次公开发现候选"
+            else "未在 Excel 基线中匹配，仅标记为系统首次发现；不推断首次公开曝光"
         )
         return AdditionClassification(addition_type, None, reason)
 
@@ -178,6 +215,13 @@ class CompanyDiscoveryPipeline:
     ) -> RunResult:
         output = RunResult()
         seen_urls: set[str] = set()
+        company_index = DatabaseCompanyIndex.from_session(db)
+        existing_sources_by_url: dict[str, list[CompanySource]] = {}
+        for source in db.scalars(select(CompanySource)):
+            existing_sources_by_url.setdefault(source.source_url, []).append(source)
+        existing_duplicates_by_url: dict[str, list[DuplicateCompanyMatch]] = {}
+        for duplicate in db.scalars(select(DuplicateCompanyMatch)):
+            existing_duplicates_by_url.setdefault(duplicate.source_url, []).append(duplicate)
         planner = EvidenceGapPlanner(lookback_days, max_queries)
         query_index = 0
         while query := planner.next_query():
@@ -204,6 +248,11 @@ class CompanyDiscoveryPipeline:
                 if controller:
                     controller.update("error", result=output, message=output.errors[-1])
                 continue
+            if getattr(self.search, "last_errors", []) and controller:
+                controller.update(
+                    "search_complete", result=output,
+                    message="部分搜索源失败：" + "；".join(self.search.last_errors),
+                )
             output.results += len(results)
             if controller:
                 controller.update(
@@ -228,22 +277,39 @@ class CompanyDiscoveryPipeline:
                             result=output,
                             message=f"抓取：{result.title or result.url}",
                         )
-                    if db.scalar(select(CompanySource.source_id).where(CompanySource.source_url == result.url).limit(1)):
-                        output.skipped += 1
-                        if controller:
-                            controller.update("skipped", result=output, message="URL 已处理，跳过")
-                        continue
-                    if db.scalar(
-                        select(DuplicateCompanyMatch.match_id)
-                        .where(DuplicateCompanyMatch.source_url == result.url)
-                        .limit(1)
-                    ):
-                        output.skipped += 1
-                        if controller:
-                            controller.update("skipped", result=output, message="URL 已记录为数据库重复，跳过")
-                        continue
-                    page = self.fetcher.fetch(result.url)
+                    page = replace(
+                        self.fetcher.fetch(result.url), discovery_providers=result.providers
+                    )
                     output.fetched += 1
+                    previous_sources = existing_sources_by_url.get(result.url, [])
+                    previous_duplicates = existing_duplicates_by_url.get(result.url, [])
+                    unchanged_sources = previous_sources and all(
+                        source.content_hash == page.content_hash
+                        and source.extractor_prompt_version == EXTRACTOR_PROMPT_VERSION
+                        for source in previous_sources
+                    )
+                    unchanged_duplicates = previous_duplicates and all(
+                        duplicate.content_hash == page.content_hash
+                        and duplicate.extractor_prompt_version == EXTRACTOR_PROMPT_VERSION
+                        for duplicate in previous_duplicates
+                    )
+                    if unchanged_sources or (not previous_sources and unchanged_duplicates):
+                        for source in previous_sources:
+                            source.last_checked_at = page.fetched_at
+                            source.search_providers = json.dumps(result.providers, ensure_ascii=False)
+                        for duplicate in previous_duplicates:
+                            duplicate.last_checked_at = page.fetched_at
+                        output.refreshed += 1
+                        output.skipped += 1
+                        db.commit()
+                        if controller:
+                            controller.update(
+                                "skipped", result=output,
+                                message="网页内容和抽取提示词版本均未变化，无需重复抽取",
+                            )
+                        continue
+                    if previous_sources or previous_duplicates:
+                        output.reextracted += 1
                     if controller:
                         controller.update("extracting", result=output, message="网页抓取完成，开始结构化抽取")
                     candidates = self.extractor.extract(page)
@@ -305,11 +371,10 @@ class CompanyDiscoveryPipeline:
                             if controller:
                                 controller.update("skipped", result=output, message="Excel 基线已包含且无新增业务/产品证据")
                             continue
-                        existing_company = self._find_existing(db, candidate)
+                        existing_company = company_index.find_exact(candidate)
                         database_match = None
                         if existing_company is None:
-                            database_match = find_database_duplicate(
-                                db,
+                            database_match = company_index.find(
                                 candidate,
                                 self.settings.database_duplicate_threshold,
                                 (
@@ -338,7 +403,10 @@ class CompanyDiscoveryPipeline:
                                 result=output,
                                 message=f"核验候选企业：{candidate.canonical_name}",
                             )
-                        outcome = self._save(db, page, candidate, self.settings, classification)
+                        outcome = self._save(
+                            db, page, candidate, self.settings, classification,
+                            existing_company=existing_company,
+                        )
                         if outcome == "created":
                             output.created += 1
                         elif outcome == "updated":
@@ -346,6 +414,13 @@ class CompanyDiscoveryPipeline:
                         elif outcome == "rejected":
                             output.rejected += 1
                         if outcome in {"created", "updated"}:
+                            saved_company = company_index.find_exact(candidate) or db.scalar(
+                                select(RobotCompany).where(
+                                    RobotCompany.canonical_name == candidate.canonical_name
+                                )
+                            )
+                            if saved_company is not None:
+                                company_index.upsert(saved_company)
                             output.addition_types[classification.addition_type] = (
                                 output.addition_types.get(classification.addition_type, 0) + 1
                             )
@@ -375,6 +450,10 @@ class CompanyDiscoveryPipeline:
             )
         )
         if existing is not None:
+            existing.source_title = page.title
+            existing.content_hash = page.content_hash
+            existing.extractor_prompt_version = EXTRACTOR_PROMPT_VERSION
+            existing.last_checked_at = page.fetched_at
             return
         db.add(
             DuplicateCompanyMatch(
@@ -392,6 +471,9 @@ class CompanyDiscoveryPipeline:
                 classification_reason=classification.reason,
                 source_url=page.url,
                 source_title=page.title,
+                content_hash=page.content_hash,
+                extractor_prompt_version=EXTRACTOR_PROMPT_VERSION,
+                last_checked_at=page.fetched_at,
             )
         )
         db.flush()
@@ -415,6 +497,7 @@ class CompanyDiscoveryPipeline:
         item: ExtractedCompanyCandidate,
         settings: Settings,
         classification: AdditionClassification | None = None,
+        existing_company: RobotCompany | None = None,
     ) -> str:
         if item.region_type != "mainland_china":
             return "rejected"
@@ -422,10 +505,11 @@ class CompanyDiscoveryPipeline:
             return "rejected"
 
         classification = classification or AdditionClassification(
-            item.addition_type_hint or "首次公开曝光", None, item.classification_evidence
+            "系统首次发现", None,
+            item.classification_evidence or "未在 Excel 基线中匹配，标记为系统首次发现",
         )
 
-        company = CompanyDiscoveryPipeline._find_existing(db, item)
+        company = existing_company or CompanyDiscoveryPipeline._find_existing(db, item)
         created = company is None
         if company is None:
             company = RobotCompany(
@@ -453,6 +537,9 @@ class CompanyDiscoveryPipeline:
                 registration_date=item.registration_date,
                 evidence_date=item.evidence_date,
                 robot_relevance=item.robot_relevance,
+                has_robot_product=item.has_robot_product or bool(item.representative_products),
+                has_commercial_progress=item.has_commercial_progress,
+                is_priority_category=item.is_priority_category,
             )
             db.add(company)
             db.flush()
@@ -473,6 +560,13 @@ class CompanyDiscoveryPipeline:
                 ensure_ascii=False,
             )
             company.robot_relevance = max(company.robot_relevance, item.robot_relevance)
+            company.has_robot_product = (
+                company.has_robot_product or item.has_robot_product or bool(item.representative_products)
+            )
+            company.has_commercial_progress = (
+                company.has_commercial_progress or item.has_commercial_progress
+            )
+            company.is_priority_category = company.is_priority_category or item.is_priority_category
             company.discovery_signal = item.discovery_signal or company.discovery_signal
             company.addition_type = classification.addition_type
             company.baseline_matched = classification.baseline_match is not None
@@ -494,8 +588,7 @@ class CompanyDiscoveryPipeline:
             )
         )
         if existing_source is None:
-            db.add(
-                CompanySource(
+            existing_source = CompanySource(
                     company_id=company.company_id,
                     source_url=page.url,
                     source_title=page.title,
@@ -504,26 +597,46 @@ class CompanyDiscoveryPipeline:
                     content_hash=page.content_hash,
                     raw_content=page.content,
                     fetched_at=page.fetched_at,
+                    last_checked_at=page.fetched_at,
+                    last_extracted_at=page.fetched_at,
+                    extractor_prompt_version=EXTRACTOR_PROMPT_VERSION,
+                    search_providers=json.dumps(page.discovery_providers, ensure_ascii=False),
                 )
-            )
+            db.add(existing_source)
             db.flush()
+        else:
+            existing_source.source_title = page.title
+            existing_source.published_at = page.published_at
+            existing_source.content_hash = page.content_hash
+            existing_source.raw_content = page.content
+            existing_source.fetched_at = page.fetched_at
+            existing_source.last_checked_at = page.fetched_at
+            existing_source.last_extracted_at = page.fetched_at
+            existing_source.extractor_prompt_version = EXTRACTOR_PROMPT_VERSION
+            existing_source.search_providers = json.dumps(page.discovery_providers, ensure_ascii=False)
+
+        db.execute(delete(CompanyEvidence).where(CompanyEvidence.source_id == existing_source.source_id))
+        for evidence in item.field_evidence:
+            digest = hashlib.sha256(
+                f"{evidence.evidence_type}\n{evidence.quote}\n{evidence.value}".encode("utf-8")
+            ).hexdigest()
+            db.add(CompanyEvidence(
+                company_id=company.company_id,
+                source_id=existing_source.source_id,
+                evidence_type=evidence.evidence_type,
+                quote=evidence.quote,
+                value=evidence.value,
+                evidence_date=evidence.evidence_date,
+                evidence_hash=digest,
+            ))
+        db.flush()
 
         sources = list(
             db.scalars(
                 select(CompanySource).where(CompanySource.company_id == company.company_id)
             )
         )
-        source_count = len(sources)
-        new_priority_score = calculate_priority_score(
-            source_url=page.url,
-            official_website=company.official_website,
-            robot_relevance=company.robot_relevance,
-            has_robot_product=item.has_robot_product or bool(item.representative_products),
-            has_commercial_progress=item.has_commercial_progress,
-            is_priority_category=item.is_priority_category,
-            source_count=source_count,
-        )
-        company.priority_score = max(company.priority_score, new_priority_score)
+        recalculate_company_priority(company, sources)
         apply_verification_decision(company, sources, settings)
         if company.verification_status == "rejected":
             if created:

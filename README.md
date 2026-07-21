@@ -9,16 +9,17 @@
   → 抽取候选机器人企业
   → 机器人主营相关性过滤
   → Excel 基线 / 数据库去重
-  → 判定四种新增类型
-  → 重点企业评分
+  → 判定新增类型并保存字段级原文证据
+  → 按全部来源与独立域名综合评分
   → 已核验或待审核企业入库
 ```
 
-新增类型包括“新注册企业、存量企业新增机器人业务、首次公开曝光、已有企业新增产品”。Excel 基线中已存在且没有新业务或新产品证据的企业会被跳过。
+Excel 未记录的企业先标记为“系统首次发现”；只有正文提供明确且在回溯期内的成立日期，才标记“新注册企业”。Excel 基线中已存在且没有新业务或新产品证据的企业会被跳过。
 
 ## 功能
 
-- Tavily / Bing 搜索接口可切换，查询词仅面向中国内地企业
+- 可在网页选择内置检索、GPT Researcher 检索或两者混合；Tavily / Bing 可并行，结果按规范化 URL 合并去重
+- GPT Researcher 仅作为检索执行层，EvidenceGapPlanner 继续判断官网、工商、产品、商业化和第二来源缺口
 - 先执行宽泛行业搜索，再根据候选企业缺少的官网、工商、产品、商业化或第二来源证据动态追加查询
 - 读取 `已入库企业信息-2026.07.09.xlsx`，按企业名称、曾用名、英文名、统一社会信用代码和官网域名比对
 - DeepSeek 一次可从网页中抽取多个候选企业
@@ -29,6 +30,8 @@
 - 英文名没有明确中文名时，DeepSeek 默认生成一个“仅用于查重”的中文检索别名；该别名与官方中文名分开保存
 - 管理页面提供带确认的“清除本地数据库”按钮，只清除数据库记录，不改动 Excel 基线文件
 - 对机器人相关性、产品、商业进展、官网、权威来源、第二来源和重点方向评分
+- 字段级保存成立、产品发布、量产、融资、交付、订单等事实的网页原句
+- 已处理 URL 会重新检查内容；正文哈希或抽取提示词版本变化时重新抽取
 - `>=80` 且具备双独立来源、至少一个可信来源、明确主体、日期和分类证据时自动标记 `verified`；否则进入 `needs_review`，低于 60 不入库
 - FastAPI 查询接口、APScheduler 每日任务和 Streamlit 管理页面
 - 网页端管理多个 OpenAI 兼容 API 模型配置，可在 DeepSeek、OpenAI、OpenRouter、硅基流动和自定义服务之间切换
@@ -38,7 +41,8 @@
 新版使用独立表：
 
 - `robot_companies`：机器人重点企业主数据
-- `company_sources`：企业发现与核验证据
+- `company_sources`：企业发现网页、内容版本、抽取版本和搜索源
+- `company_evidence`：字段级原文证据
 - `duplicate_company_matches`：与当前数据库相似度达到阈值的重复候选及匹配依据
 
 旧版的 `companies`、`leads`、`sources` 表不会自动删除，也不会被新版读取。生产环境应使用 Alembic 管理迁移。
@@ -76,7 +80,7 @@
 ```powershell
 python -m venv .venv
 .venv\Scripts\Activate.ps1
-pip install -e ".[test]"
+pip install -e ".[test,research]"
 Copy-Item .env.example .env
 uvicorn app.main:app --reload
 ```
@@ -122,6 +126,8 @@ streamlit run dashboard.py
 - `AUTO_VERIFY_REQUIRE_IDENTITY=true`：要求信用代码或可确认的官网域名
 - `AUTO_VERIFY_REQUIRE_EVIDENCE_DATE=true`：要求明确证据日期
 - `SEARCH_RESULTS_PER_QUERY=8`：每个中英文查询返回数量
+- `SEARCH_MODE=native`：`native`、`gpt_researcher` 或 `hybrid`
+- `SEARCH_PROVIDERS=tavily`：逗号分隔的搜索源，例如 `tavily,bing`
 - `DEFAULT_LOOKBACK_DAYS=14`：定时任务默认回溯范围
 - `BASELINE_WORKBOOK_PATH=已入库企业信息-2026.07.09.xlsx`：Excel 基线文件路径
 - `DATABASE_DUPLICATE_THRESHOLD=75`：当前数据库企业名称相似重复阈值

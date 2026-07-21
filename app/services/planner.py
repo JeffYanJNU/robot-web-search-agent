@@ -64,7 +64,7 @@ class EvidenceGapPlanner:
         cutoff = date.today() - timedelta(days=self._lookback_days)
         for gap, text in gaps:
             gap_key = (name.casefold(), gap)
-            query_text = f"{text} after:{cutoff.isoformat()}"
+            query_text = text
             if gap_key in self._planned_gaps or query_text in self._seen_queries:
                 continue
             self._planned_gaps.add(gap_key)
@@ -73,6 +73,7 @@ class EvidenceGapPlanner:
                 text=query_text,
                 reason=f"补充{name}的{self._gap_label(gap)}",
                 adaptive=True,
+                start_date=cutoff.isoformat(),
             )
             planned.append(query)
             if len(planned) >= 2:

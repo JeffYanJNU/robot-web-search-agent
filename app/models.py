@@ -31,7 +31,7 @@ class RobotCompany(Base):
     robot_categories: Mapped[str] = mapped_column(Text, default="[]")
     representative_products: Mapped[str] = mapped_column(Text, default="[]")
     discovery_signal: Mapped[str] = mapped_column(String(100), default="其他")
-    addition_type: Mapped[str] = mapped_column(String(40), default="首次公开曝光", index=True)
+    addition_type: Mapped[str] = mapped_column(String(40), default="系统首次发现", index=True)
     baseline_matched: Mapped[bool] = mapped_column(Boolean, default=False, index=True)
     baseline_company_name: Mapped[str] = mapped_column(String(255), default="")
     classification_reason: Mapped[str] = mapped_column(Text, default="")
@@ -39,6 +39,9 @@ class RobotCompany(Base):
     registration_date: Mapped[date | None] = mapped_column(Date)
     evidence_date: Mapped[date | None] = mapped_column(Date)
     robot_relevance: Mapped[int] = mapped_column(Integer, default=0)
+    has_robot_product: Mapped[bool] = mapped_column(Boolean, default=False)
+    has_commercial_progress: Mapped[bool] = mapped_column(Boolean, default=False)
+    is_priority_category: Mapped[bool] = mapped_column(Boolean, default=False)
     priority_score: Mapped[int] = mapped_column(Integer, default=0, index=True)
     verification_status: Mapped[str] = mapped_column(String(30), default="needs_review", index=True)
     verification_reason: Mapped[str] = mapped_column(Text, default="")
@@ -67,8 +70,34 @@ class CompanySource(Base):
     content_hash: Mapped[str] = mapped_column(String(64), index=True)
     raw_content: Mapped[str] = mapped_column(Text)
     fetched_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    last_checked_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    last_extracted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    extractor_prompt_version: Mapped[str] = mapped_column(String(64), default="")
+    search_providers: Mapped[str] = mapped_column(Text, default="[]")
 
     company: Mapped[RobotCompany] = relationship(back_populates="sources")
+    evidence: Mapped[list["CompanyEvidence"]] = relationship(
+        back_populates="source", cascade="all, delete-orphan"
+    )
+
+
+class CompanyEvidence(Base):
+    __tablename__ = "company_evidence"
+    __table_args__ = (
+        UniqueConstraint("source_id", "evidence_hash", name="uq_source_evidence_hash"),
+    )
+
+    evidence_id: Mapped[int] = mapped_column(primary_key=True)
+    company_id: Mapped[int] = mapped_column(ForeignKey("robot_companies.company_id"), index=True)
+    source_id: Mapped[int] = mapped_column(ForeignKey("company_sources.source_id"), index=True)
+    evidence_type: Mapped[str] = mapped_column(String(40), index=True)
+    quote: Mapped[str] = mapped_column(Text)
+    value: Mapped[str] = mapped_column(String(1000), default="")
+    evidence_date: Mapped[date | None] = mapped_column(Date)
+    evidence_hash: Mapped[str] = mapped_column(String(64))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+
+    source: Mapped[CompanySource] = relationship(back_populates="evidence")
 
 
 class DuplicateCompanyMatch(Base):
@@ -96,4 +125,7 @@ class DuplicateCompanyMatch(Base):
     classification_reason: Mapped[str] = mapped_column(Text, default="")
     source_url: Mapped[str] = mapped_column(String(2000))
     source_title: Mapped[str] = mapped_column(String(1000), default="")
+    content_hash: Mapped[str] = mapped_column(String(64), default="", index=True)
+    extractor_prompt_version: Mapped[str] = mapped_column(String(64), default="")
+    last_checked_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
     detected_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)

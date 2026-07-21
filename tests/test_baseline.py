@@ -3,7 +3,7 @@ from datetime import date
 from openpyxl import Workbook
 
 from app.services.baseline import BaselineRegistry
-from app.services.extractor import ExtractedCompanyCandidate
+from app.services.extractor import ExtractedCompanyCandidate, FieldEvidence
 from app.services.pipeline import classify_addition
 
 
@@ -30,6 +30,14 @@ def candidate(name: str) -> ExtractedCompanyCandidate:
 def test_new_registration_when_not_in_baseline(tmp_path):
     item = candidate("全新机器人有限公司")
     item.registration_date = date.today()
+    item.field_evidence = [
+        FieldEvidence(
+            evidence_type="registration",
+            quote=f"公司成立于 {date.today().isoformat()}。",
+            value=date.today().isoformat(),
+            evidence_date=date.today(),
+        )
+    ]
     result = classify_addition(item, make_registry(tmp_path), 14)
     assert result is not None
     assert result.addition_type == "新注册企业"
@@ -49,3 +57,13 @@ def test_existing_company_new_product(tmp_path):
 def test_baseline_duplicate_without_new_evidence(tmp_path):
     item = candidate("存量科技有限公司")
     assert classify_addition(item, make_registry(tmp_path), 14) is None
+
+
+def test_missing_baseline_is_system_discovery_without_explicit_registration_quote(tmp_path):
+    item = candidate("另一家机器人有限公司")
+    item.registration_date = date.today()
+    item.addition_type_hint = "新注册企业"
+    item.discovery_signal = "新成立"
+    result = classify_addition(item, make_registry(tmp_path), 14)
+    assert result is not None
+    assert result.addition_type == "系统首次发现"
