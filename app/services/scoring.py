@@ -79,8 +79,14 @@ def calculate_priority_score(
     return min(score, 100)
 
 
-def verification_status(score: int, auto_verify_score: int = 80, min_priority_score: int = 60) -> str:
-    if score >= auto_verify_score:
+def verification_status(
+    score: int,
+    auto_verify_score: int = 80,
+    min_priority_score: int = 60,
+    *,
+    auto_verify_eligible: bool = True,
+) -> str:
+    if score >= auto_verify_score and auto_verify_eligible:
         return "verified"
     if score >= min_priority_score:
         return "needs_review"

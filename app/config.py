@@ -11,6 +11,8 @@ class Settings(BaseSettings):
     deepseek_api_key: str = ""
     deepseek_base_url: str = "https://api.deepseek.com"
     deepseek_model: str = "deepseek-chat"
+    llm_json_mode: bool = True
+    model_config_path: str = "model_configs.json"
     search_provider: str = "tavily"
     tavily_api_key: str = ""
     bing_api_key: str = ""
@@ -25,6 +27,12 @@ class Settings(BaseSettings):
     min_robot_relevance: int = Field(default=70, ge=0, le=100)
     min_priority_score: int = Field(default=60, ge=0, le=100)
     auto_verify_score: int = Field(default=80, ge=0, le=100)
+    auto_verify_min_independent_sources: int = Field(default=2, ge=2, le=10)
+    auto_verify_require_trusted_source: bool = True
+    auto_verify_require_identity: bool = True
+    auto_verify_require_evidence_date: bool = True
+    baseline_workbook_path: str = "已入库企业信息-2026.07.09.xlsx"
+    database_duplicate_threshold: float = Field(default=75, ge=0, le=100)
 
 
 @lru_cache

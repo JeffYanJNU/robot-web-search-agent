@@ -18,11 +18,16 @@ services:
   api:
     build: .
     env_file: .env
-    environment:
-      DATABASE_URL: postgresql+psycopg://robot:robot@db:5432/robot_leads
     command: uvicorn app.main:app --host 0.0.0.0 --port 8000
     ports:
       - "8000:8000"
+    volumes:
+      - ./已入库企业信息-2026.07.09.xlsx:/data/已入库企业信息-2026.07.09.xlsx:ro
+      - model_config_data:/config
+    environment:
+      DATABASE_URL: postgresql+psycopg://robot:robot@db:5432/robot_leads
+      BASELINE_WORKBOOK_PATH: /data/已入库企业信息-2026.07.09.xlsx
+      MODEL_CONFIG_PATH: /config/model_configs.json
     depends_on:
       db:
         condition: service_healthy
@@ -40,4 +45,4 @@ services:
 
 volumes:
   postgres_data:
-
+  model_config_data:

@@ -1,6 +1,6 @@
+import time
 from dataclasses import dataclass
 from datetime import date, timedelta
-import time
 
 import httpx
 
@@ -8,32 +8,31 @@ from app.config import Settings
 
 
 DISCOVERY_QUERIES_ZH = [
-    "机器人企业 新成立",
-    "人形机器人 创业公司",
-    "机器人公司 融资",
-    "机器人企业 发布首款产品",
-    "企业 进入机器人领域",
-    "机器人公司 量产 交付",
-    "机器人核心零部件 企业",
-    "特种机器人 新公司",
-]
-
-DISCOVERY_QUERIES_EN = [
-    "new robotics company",
-    "humanoid robotics startup",
-    "robotics company funding",
-    "robotics startup launches first product",
-    "company enters robotics market",
-    "robot manufacturer production delivery",
-    "robotics core components company",
-    "new special purpose robotics company",
+    "中国 机器人企业 新注册 成立",
+    "中国 人形机器人 创业公司 新成立",
+    "中国 机器人公司 工商注册",
+    "中国 机器人企业 首次亮相 首次曝光",
+    "中国 企业 首次发布机器人业务",
+    "中国 上市公司 进入机器人领域",
+    "中国 制造企业 新增机器人业务",
+    "中国 企业 成立机器人子公司",
+    "中国 机器人企业 发布首款产品",
+    "中国 机器人公司 新产品发布",
+    "中国 人形机器人 新型号 发布",
+    "中国 工业机器人 新产品 量产",
+    "中国 服务机器人 新产品 交付",
+    "中国 特种机器人 新产品 中标",
+    "中国 机器人核心零部件 新企业 新产品",
+    "中国 具身智能 企业 融资 产品发布",
 ]
 
 
 @dataclass(frozen=True)
 class SearchQuery:
     text: str
-    market: str
+    market: str = "zh-CN"
+    reason: str = "固定行业搜索"
+    adaptive: bool = False
 
 
 @dataclass(frozen=True)
@@ -45,16 +44,10 @@ class SearchResult:
 
 def build_queries(lookback_days: int, max_queries: int) -> list[SearchQuery]:
     since = date.today() - timedelta(days=lookback_days)
-    zh = [SearchQuery(f"{query} after:{since.isoformat()}", "zh-CN") for query in DISCOVERY_QUERIES_ZH]
-    en = [SearchQuery(f"{query} after:{since.isoformat()}", "en-US") for query in DISCOVERY_QUERIES_EN]
-
-    queries: list[SearchQuery] = []
-    for index in range(max(len(zh), len(en))):
-        if index < len(zh):
-            queries.append(zh[index])
-        if index < len(en):
-            queries.append(en[index])
-    return queries[:max_queries]
+    return [
+        SearchQuery(f"{query} after:{since.isoformat()}")
+        for query in DISCOVERY_QUERIES_ZH[:max_queries]
+    ]
 
 
 class SearchClient:
@@ -98,7 +91,7 @@ class SearchClient:
             params={
                 "q": query.text,
                 "count": self.settings.search_results_per_query,
-                "mkt": query.market,
+                "mkt": "zh-CN",
                 "responseFilter": "Webpages",
             },
             headers={"Ocp-Apim-Subscription-Key": self.settings.bing_api_key},

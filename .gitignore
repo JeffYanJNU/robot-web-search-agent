@@ -1,7 +1,10 @@
 .env
+model_configs.json
+model_configs.json.tmp
 .venv/
 __pycache__/
 .pytest_cache/
 *.py[cod]
 *.db
-
+*.xlsx
+*.egg-info/

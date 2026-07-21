@@ -25,5 +25,6 @@ def test_priority_score_and_status():
     )
     assert score == 90
     assert verification_status(score) == "verified"
+    assert verification_status(score, auto_verify_eligible=False) == "needs_review"
     assert verification_status(70) == "needs_review"
     assert verification_status(59) == "rejected"
