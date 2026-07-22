@@ -10,9 +10,11 @@ from sqlalchemy import func, select
 
 from app.config import Settings
 from app.database import SessionLocal
-from app.models import RobotCompany
+from app.models import ProductCompanyRelation, RobotCompany, RobotProduct
 from app.schemas import RunResult
 from app.services.pipeline import CompanyDiscoveryPipeline, PipelineController
+from app.services.product_pipeline import ProductDiscoveryPipeline
+from app.services.result_exporter import export_run_results
 
 
 def utc_iso() -> str:
@@ -25,6 +27,9 @@ ACTION_LABELS = {
     "search_complete": "搜索完成",
     "fetching": "正在抓取网页",
     "extracting": "正在抽取企业信息",
+    "searching_product": "正在搜索机器人新产品",
+    "extracting_product": "正在抽取产品与企业关系",
+    "verifying_product": "正在核验产品真实性与企业关系",
     "saving": "正在核验并入库",
     "skipped": "跳过重复或无关结果",
     "error": "发生错误，继续下一项",
@@ -49,6 +54,7 @@ class RunManager(PipelineController):
     def _empty_state() -> dict[str, Any]:
         return {
             "run_id": None,
+            "pipeline_mode": "product",
             "status": "idle",
             "current_action": "尚未启动任务",
             "current_query": "",
@@ -58,12 +64,20 @@ class RunManager(PipelineController):
             "result": RunResult().model_dump(),
             "logs": deque(maxlen=100),
             "analysis": None,
+            "consecutive_model_502": 0,
+            "auto_pause_reason": "",
             "started_at": None,
             "updated_at": None,
             "finished_at": None,
         }
 
-    def start(self, settings: Settings, lookback_days: int, max_queries: int) -> dict[str, Any]:
+    def start(
+        self,
+        settings: Settings,
+        lookback_days: int,
+        max_queries: int,
+        pipeline_mode: str = "product",
+    ) -> dict[str, Any]:
         with self._lock:
             if self._state["status"] in {"running", "pausing", "paused"}:
                 raise RuntimeError("已有采集任务正在运行")
@@ -72,6 +86,7 @@ class RunManager(PipelineController):
             self._state = self._empty_state()
             self._state.update(
                 run_id=uuid4().hex,
+                pipeline_mode=pipeline_mode,
                 status="running",
                 current_action=ACTION_LABELS["starting"],
                 max_queries=max_queries,
@@ -81,19 +96,41 @@ class RunManager(PipelineController):
             self._append_log_locked("任务已启动")
             self._thread = Thread(
                 target=self._worker,
-                args=(settings, lookback_days, max_queries),
-                name="company-discovery-run",
+                args=(settings, lookback_days, max_queries, pipeline_mode),
+                name=f"{pipeline_mode}-discovery-run",
                 daemon=True,
             )
             self._thread.start()
             return self._snapshot_locked()
 
-    def _worker(self, settings: Settings, lookback_days: int, max_queries: int) -> None:
+    def _worker(
+        self,
+        settings: Settings,
+        lookback_days: int,
+        max_queries: int,
+        pipeline_mode: str,
+    ) -> None:
         try:
             with SessionLocal() as db:
-                result = CompanyDiscoveryPipeline(settings).run(
+                pipeline = (
+                    ProductDiscoveryPipeline(settings)
+                    if pipeline_mode == "product"
+                    else CompanyDiscoveryPipeline(settings)
+                )
+                result = pipeline.run(
                     db, lookback_days, max_queries, controller=self
                 )
+                if not self._cancel.is_set():
+                    output_path = export_run_results(
+                        db,
+                        result,
+                        pipeline_mode=pipeline_mode,
+                        lookback_days=lookback_days,
+                        output_dir=settings.output_dir,
+                        run_id=str(self._state.get("run_id") or ""),
+                    )
+                    result.output_file = str(output_path)
+                    result.output_filename = output_path.name
             with self._lock:
                 status = "cancelled" if self._cancel.is_set() else "completed"
                 self._state["status"] = status
@@ -102,6 +139,10 @@ class RunManager(PipelineController):
                 self._state["finished_at"] = utc_iso()
                 self._state["updated_at"] = utc_iso()
                 self._append_log_locked(self._state["current_action"])
+                if result.output_filename:
+                    self._append_log_locked(
+                        f"结果已导出：{result.output_filename}"
+                    )
         except Exception as exc:
             with self._lock:
                 self._state["status"] = "failed"
@@ -164,11 +205,37 @@ class RunManager(PipelineController):
             if self._state["status"] not in {"paused", "pausing"}:
                 raise RuntimeError("当前任务未暂停")
             self._pause.clear()
+            self._state["consecutive_model_502"] = 0
+            self._state["auto_pause_reason"] = ""
             self._state["status"] = "running"
             self._state["current_action"] = ACTION_LABELS["resumed"]
             self._state["updated_at"] = utc_iso()
             self._append_log_locked("收到继续请求")
             return self._snapshot_locked()
+
+    def model_call_succeeded(self) -> None:
+        with self._lock:
+            self._state["consecutive_model_502"] = 0
+
+    def model_call_failed(self, status_code: int | None) -> bool:
+        """Track consecutive model 502 responses and request a safe automatic pause."""
+        with self._lock:
+            if status_code != 502:
+                self._state["consecutive_model_502"] = 0
+                return False
+            failures = int(self._state.get("consecutive_model_502", 0)) + 1
+            self._state["consecutive_model_502"] = failures
+            self._state["updated_at"] = utc_iso()
+            self._append_log_locked(f"模型 API 连续返回 502（{failures}/3）")
+            if failures < 3 or self._state["status"] not in {"running", "pausing"}:
+                return False
+            reason = "模型 API 连续 3 次返回 502，任务已自动暂停"
+            self._pause.set()
+            self._state["status"] = "pausing"
+            self._state["current_action"] = "模型异常，正在自动暂停"
+            self._state["auto_pause_reason"] = reason
+            self._append_log_locked(reason)
+            return True
 
     def cancel(self) -> dict[str, Any]:
         with self._lock:
@@ -212,6 +279,20 @@ class RunManager(PipelineController):
 
 
 def build_current_analysis(db, state: dict[str, Any]) -> dict[str, Any]:
+    product_by_status = dict(
+        db.execute(
+            select(RobotProduct.verification_status, func.count()).group_by(
+                RobotProduct.verification_status
+            )
+        ).all()
+    )
+    product_by_addition_type = dict(
+        db.execute(
+            select(RobotProduct.addition_type, func.count()).group_by(
+                RobotProduct.addition_type
+            )
+        ).all()
+    )
     by_status = dict(
         db.execute(
             select(RobotCompany.verification_status, func.count()).group_by(
@@ -240,7 +321,8 @@ def build_current_analysis(db, state: dict[str, Any]) -> dict[str, Any]:
     errors = result.get("errors", [])
     observations: list[str] = []
     if result.get("created", 0):
-        observations.append(f"本轮已新增 {result['created']} 家候选企业。")
+        unit = "个候选产品" if state.get("pipeline_mode") == "product" else "家候选企业"
+        observations.append(f"本轮已新增 {result['created']} {unit}。")
     if result.get("updated", 0):
         observations.append(f"已有 {result['updated']} 家企业获得新证据。")
     if result.get("rejected", 0):
@@ -255,7 +337,16 @@ def build_current_analysis(db, state: dict[str, Any]) -> dict[str, Any]:
         observations.append("当前样本仍较少，继续采集后再判断区域和赛道趋势。")
     return {
         "generated_at": utc_iso(),
-        "headline": f"当前库中共 {sum(by_status.values())} 家重点机器人企业",
+        "headline": (
+            f"当前库中共 {sum(product_by_status.values())} 个机器人产品"
+            if state.get("pipeline_mode") == "product"
+            else f"当前库中共 {sum(by_status.values())} 家重点机器人企业"
+        ),
+        "product_by_status": product_by_status,
+        "product_by_addition_type": product_by_addition_type,
+        "relations": db.scalar(
+            select(func.count()).select_from(ProductCompanyRelation)
+        ) or 0,
         "by_status": by_status,
         "by_region": by_region,
         "by_addition_type": by_addition_type,

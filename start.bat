@@ -18,16 +18,15 @@ if not exist ".env" (
     exit /b 1
 )
 
-echo Starting API at http://localhost:8000 ...
-start "Robot Agent API" cmd /k ""%PROJECT_PYTHON%" -m uvicorn app.main:app --reload"
-
-echo Starting dashboard at http://localhost:8501 ...
-start "Robot Agent Dashboard" cmd /k ""%PROJECT_PYTHON%" -m streamlit run dashboard.py"
+echo Starting Web application at http://localhost:8000 ...
+start "Robot Intelligence Web" cmd /k ""%PROJECT_PYTHON%" -m uvicorn app.main:app --reload"
+timeout /t 2 /nobreak >nul
+start "" http://localhost:8000
 
 echo.
-echo Startup commands sent successfully.
-echo Dashboard: http://localhost:8501
+echo Startup command sent successfully.
+echo Web: http://localhost:8000
 echo API docs: http://localhost:8000/docs
-echo Close both service windows to stop the project.
+echo Close the service window to stop the project.
 
 endlocal

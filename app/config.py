@@ -35,6 +35,11 @@ class Settings(BaseSettings):
     auto_verify_require_evidence_date: bool = True
     baseline_workbook_path: str = "已入库企业信息-2026.07.09.xlsx"
     database_duplicate_threshold: float = Field(default=75, ge=0, le=100)
+    product_auto_verify_score: int = Field(default=80, ge=0, le=100)
+    product_novelty_threshold: int = Field(default=75, ge=0, le=100)
+    relation_auto_verify_score: int = Field(default=80, ge=0, le=100)
+    default_pipeline_mode: str = "product"
+    output_dir: str = "output"
 
 
 @lru_cache

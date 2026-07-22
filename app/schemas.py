@@ -10,6 +10,7 @@ class RunRequest(BaseModel):
     max_queries: int = Field(default=16, ge=2, le=60)
     search_mode: Literal["native", "gpt_researcher", "hybrid"] | None = None
     search_providers: list[Literal["tavily", "bing"]] | None = Field(default=None, min_length=1)
+    pipeline_mode: Literal["product", "company"] = "product"
 
 
 class EvidenceOut(BaseModel):
@@ -112,6 +113,24 @@ class RunResult(BaseModel):
     baseline_duplicates: int = 0
     database_duplicates: int = 0
     ai_translations: int = 0
+    product_candidates: int = 0
+    raw_product_candidates: int = 0
+    repaired_product_candidates: int = 0
+    invalid_product_candidates: int = 0
+    product_evidence_rejected: int = 0
+    products_staged: int = 0
+    products_created: int = 0
+    products_updated: int = 0
+    products_rejected: int = 0
+    relations_created: int = 0
+    relations_verified: int = 0
+    companies_created: int = 0
+    companies_linked: int = 0
+    product_duplicates: int = 0
+    product_ids: list[int] = Field(default_factory=list)
+    company_ids: list[int] = Field(default_factory=list)
+    output_file: str = ""
+    output_filename: str = ""
     addition_types: dict[str, int] = Field(default_factory=dict)
     errors: list[str] = Field(default_factory=list)
 
@@ -138,3 +157,74 @@ class DuplicateMatchOut(BaseModel):
 
 class ClearDatabaseRequest(BaseModel):
     confirm: bool = False
+
+
+def parse_json_array(value: object) -> list[dict]:
+    if isinstance(value, list):
+        return [item for item in value if isinstance(item, dict)]
+    if not value:
+        return []
+    try:
+        parsed = json.loads(str(value))
+    except json.JSONDecodeError:
+        return []
+    return [item for item in parsed if isinstance(item, dict)] if isinstance(parsed, list) else []
+
+
+class ProductSourceOut(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+    source_id: int
+    source_url: str
+    source_title: str
+    source_type: str
+    published_at: datetime | None
+    fetched_at: datetime
+    evidence_json: list[dict] = Field(default_factory=list)
+
+    @field_validator("evidence_json", mode="before")
+    @classmethod
+    def parse_evidence(cls, value: object) -> list[dict]:
+        return parse_json_array(value)
+
+
+class ProductRelationOut(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+    relation_id: int
+    company_id: int
+    relation_type: str
+    relation_score: int
+    verification_status: str
+    verification_reason: str
+    is_primary: bool
+    evidence_json: list[dict] = Field(default_factory=list)
+
+    @field_validator("evidence_json", mode="before")
+    @classmethod
+    def parse_evidence(cls, value: object) -> list[dict]:
+        return parse_json_array(value)
+
+
+class ProductOut(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+    product_id: int
+    canonical_name: str
+    original_name: str
+    normalized_name: str
+    model_number: str
+    series_name: str
+    robot_category: str
+    product_description: str
+    launch_date: date | None
+    launch_status: str
+    addition_type: str
+    authenticity_score: int
+    novelty_score: int
+    verification_status: str
+    verification_reason: str
+    conflict_status: str
+    conflict_reason: str
+    first_discovered_at: datetime
+    last_verified_at: datetime | None
+    created_at: datetime
+    sources: list[ProductSourceOut] = Field(default_factory=list)
+    company_relations: list[ProductRelationOut] = Field(default_factory=list)

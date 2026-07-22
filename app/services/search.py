@@ -32,6 +32,19 @@ DISCOVERY_QUERIES_ZH = [
     "中国 具身智能 企业 融资 产品发布",
 ]
 
+PRODUCT_DISCOVERY_QUERIES_ZH = [
+    "中国 机器人 新产品 发布",
+    "中国 人形机器人 新型号 发布",
+    "中国 工业机器人 新品 发布",
+    "中国 服务机器人 新产品 亮相",
+    "中国 特种机器人 新型号",
+    "机器人 首款产品 正式发布",
+    "机器人 新一代 产品 发布",
+    "机器人 样机 首次亮相",
+    "机器人 产品 下线 量产",
+    "机器人 产品 交付",
+]
+
 
 @dataclass(frozen=True)
 class SearchQuery:
@@ -109,6 +122,14 @@ def build_queries(lookback_days: int, max_queries: int) -> list[SearchQuery]:
     return [
         SearchQuery(query, start_date=since.isoformat())
         for query in DISCOVERY_QUERIES_ZH[:max_queries]
+    ]
+
+
+def build_product_queries(lookback_days: int, max_queries: int) -> list[SearchQuery]:
+    since = date.today() - timedelta(days=lookback_days)
+    return [
+        SearchQuery(query, reason="机器人产品专项搜索", start_date=since.isoformat())
+        for query in PRODUCT_DISCOVERY_QUERIES_ZH[:max_queries]
     ]
 
 
