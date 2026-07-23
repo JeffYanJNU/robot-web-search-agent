@@ -479,6 +479,7 @@ async function submitTask(event) {
     max_queries: Number(form.elements.max_queries.value),
     search_mode: form.elements.search_mode.value,
     search_providers: providers,
+    inventory_workbook_path: form.elements.inventory_workbook_path.value.trim(),
   };
   const submit = form.querySelector('[type="submit"]');
   const original = submit.textContent;

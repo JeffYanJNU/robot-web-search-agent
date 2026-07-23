@@ -87,6 +87,33 @@ def test_run_start_is_blocked_when_model_preflight_fails(monkeypatch):
     assert main_module.run_manager.snapshot()["status"] == "idle"
 
 
+def test_run_start_is_blocked_when_inventory_workbook_is_missing(tmp_path, monkeypatch):
+    monkeypatch.setattr(
+        main_module,
+        "test_model_api",
+        lambda _settings: {
+            "success": True,
+            "message": "模型 API 真实调用成功",
+        },
+    )
+    with TestClient(main_module.app) as client:
+        response = client.post(
+            "/runs/start",
+            json={
+                "pipeline_mode": "product",
+                "lookback_days": 14,
+                "max_queries": 8,
+                "search_mode": "native",
+                "search_providers": ["tavily"],
+                "inventory_workbook_path": str(tmp_path / "missing.xlsx"),
+            },
+        )
+
+    assert response.status_code == 400
+    assert "库存文件不存在" in response.json()["detail"]
+    assert main_module.run_manager.snapshot()["status"] == "idle"
+
+
 def test_model_config_test_endpoint_returns_real_call_result(tmp_path, monkeypatch):
     store = ModelConfigStore(
         Settings(deepseek_api_key="secret", model_config_path=str(tmp_path / "models.json"))

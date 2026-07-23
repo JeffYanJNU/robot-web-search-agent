@@ -14,9 +14,15 @@ from openpyxl.worksheet.table import Table, TableStyleInfo
 from sqlalchemy import select
 from sqlalchemy.orm import Session, selectinload
 
-from app.models import ProductCompanyRelation, RobotCompany, RobotProduct
+from app.models import ProductCompanyRelation, ProductSource, RobotCompany, RobotProduct
 from app.schemas import RunResult
-from app.services.product_rules import PRODUCT_EVENT_TYPES, STRONG_RELATION_TYPES
+from app.services.product_inventory_matcher import compare_product_names_from_workbook
+from app.services.product_rules import (
+    PRODUCT_EVENT_TYPES,
+    STRONG_RELATION_TYPES,
+    is_same_product_identity,
+    normalize_product_name,
+)
 
 
 NAVY = "172554"
@@ -33,6 +39,8 @@ MAIN_HEADERS = [
     "B｜关联企业（简称 / 全称）",
     "C｜产品是否存在及依据",
     "D｜产品与企业是否对应及依据",
+    "E｜与已有产品名称相似度",
+    "F｜相似度说明",
 ]
 
 DETAIL_HEADERS = [
@@ -119,6 +127,140 @@ def resolve_company_names(company: RobotCompany) -> tuple[str, str, str]:
     ]
     short_name = min(short_candidates, key=len) if short_candidates else LEGAL_SUFFIX.sub("", full_name)
     return short_name or company.canonical_name, full_name, full_source
+
+
+class _RelationExportView:
+    """Best relation plus evidence collected from equivalent legacy rows."""
+
+    def __init__(self, relations: list[ProductCompanyRelation]):
+        self.primary = max(
+            relations,
+            key=lambda item: (
+                item.is_primary,
+                item.verification_status == "verified",
+                item.relation_score,
+                len(item.evidence_json or ""),
+            ),
+        )
+        evidence: list[dict[str, Any]] = []
+        seen: set[tuple[str, str, str, str]] = set()
+        for relation in relations:
+            for item in _json_list(relation.evidence_json):
+                key = (
+                    str(item.get("source_url") or ""),
+                    str(item.get("quote") or ""),
+                    str(item.get("company_name") or ""),
+                    str(item.get("relation_type") or ""),
+                )
+                if key not in seen:
+                    seen.add(key)
+                    evidence.append(item)
+        self.company_id = self.primary.company_id
+        self.relation_type = self.primary.relation_type
+        self.relation_score = max(item.relation_score for item in relations)
+        self.verification_status = (
+            "verified"
+            if any(item.verification_status == "verified" for item in relations)
+            else self.primary.verification_status
+        )
+        self.verification_reason = "；".join(
+            _unique(item.verification_reason for item in relations)
+        )
+        self.evidence_json = json.dumps(evidence, ensure_ascii=False)
+        self.is_primary = any(item.is_primary for item in relations)
+
+    def __getattr__(self, name: str) -> Any:
+        return getattr(self.primary, name)
+
+
+class _ProductExportView:
+    """Read-only merged view used to suppress legacy duplicate products."""
+
+    def __init__(
+        self,
+        products: list[RobotProduct],
+        allowed_company_ids: set[int] | None = None,
+    ):
+        self.products = products
+        self.representative = max(
+            products,
+            key=lambda item: (
+                len({source.source_url for source in item.sources}),
+                item.authenticity_score,
+                item.novelty_score,
+                len(item.canonical_name or ""),
+            ),
+        )
+        source_by_url: dict[str, ProductSource] = {}
+        for product in products:
+            for source in product.sources:
+                key = source.canonical_url or source.source_url
+                current = source_by_url.get(key)
+                if current is None or len(source.evidence_json or "") > len(
+                    current.evidence_json or ""
+                ):
+                    source_by_url[key] = source
+        self.sources = list(source_by_url.values())
+
+        relation_by_key: dict[tuple[int, str], ProductCompanyRelation] = {}
+        for product in products:
+            for relation in product.company_relations:
+                if (
+                    allowed_company_ids is not None
+                    and relation.company_id not in allowed_company_ids
+                ):
+                    continue
+                key = (relation.company_id, relation.relation_type)
+                current = relation_by_key.get(key)
+                if current is None or (
+                    relation.relation_score,
+                    len(relation.evidence_json or ""),
+                ) > (
+                    current.relation_score,
+                    len(current.evidence_json or ""),
+                ):
+                    relation_by_key[key] = relation
+        relations = list(relation_by_key.values())
+        self.company_relations = [_RelationExportView(relations)] if relations else []
+
+    def __getattr__(self, name: str) -> Any:
+        return getattr(self.representative, name)
+
+
+def _group_products_for_export(
+    products: list[RobotProduct],
+    allowed_company_ids: set[int] | None = None,
+) -> list[_ProductExportView]:
+    groups: list[list[RobotProduct]] = []
+    normalized_by_id = {
+        product.product_id: normalize_product_name(
+            product.canonical_name,
+            product.model_number,
+            product.series_name,
+        )
+        for product in products
+    }
+    for product in products:
+        normalized = normalized_by_id[product.product_id]
+        for group in groups:
+            if any(
+                is_same_product_identity(
+                    normalized,
+                    normalized_by_id[member.product_id],
+                )
+                for member in group
+            ):
+                group.append(product)
+                break
+        else:
+            groups.append([product])
+    views = [
+        _ProductExportView(group, allowed_company_ids=allowed_company_ids)
+        for group in groups
+    ]
+    if allowed_company_ids is not None:
+        views = [view for view in views if view.company_relations]
+    return views
 
 
 def _product_evidence(product: RobotProduct) -> list[dict[str, Any]]:
@@ -338,7 +480,8 @@ def _add_table_sheet(
         worksheet.add_table(table)
     for index, width in enumerate(widths, 1):
         worksheet.column_dimensions[get_column_letter(index)].width = min(width, 65)
-    worksheet.auto_filter.ref = f"A2:{last_column}{max(2, len(rows) + 2)}"
+    if not rows:
+        worksheet.auto_filter.ref = f"A2:{last_column}2"
     return worksheet
 
 
@@ -350,6 +493,7 @@ def export_run_results(
     lookback_days: int,
     output_dir: str,
     run_id: str = "",
+    inventory_workbook_path: str | None = None,
 ) -> Path:
     product_ids = list(dict.fromkeys(result.product_ids))
     company_ids = list(dict.fromkeys(result.company_ids))
@@ -375,7 +519,6 @@ def export_run_results(
         ),
         reverse=True,
     )
-
     related_company_ids = {
         relation.company_id
         for product in products
@@ -392,6 +535,15 @@ def export_run_results(
         else []
     )
     company_by_id = {company.company_id: company for company in companies}
+    mainland_company_ids = {
+        company.company_id
+        for company in companies
+        if company.region_type == "mainland_china"
+    }
+    products = _group_products_for_export(
+        products,
+        allowed_company_ids=mainland_company_ids,
+    )
 
     main_rows: list[list[Any]] = []
     detail_rows: list[list[Any]] = []
@@ -464,6 +616,18 @@ def export_run_results(
                 ]
             )
 
+    if main_rows:
+        if inventory_workbook_path:
+            name_matches = compare_product_names_from_workbook(
+                (str(row[0]) for row in main_rows),
+                inventory_workbook_path,
+            )
+            for row, name_match in zip(main_rows, name_matches, strict=True):
+                row.extend([name_match.score / 100.0, name_match.explanation])
+        else:
+            for row in main_rows:
+                row.extend([0.0, "任务开始前未指定已有产品库存文件，未执行名称相似度对比"])
+
     workbook = Workbook()
     workbook.remove(workbook.active)
     main = _add_table_sheet(
@@ -472,7 +636,7 @@ def export_run_results(
         "高热度机器人产品、关联企业与真实性核验结果",
         MAIN_HEADERS,
         main_rows,
-        [26, 42, 65, 65],
+        [26, 42, 65, 65, 20, 65],
         "ProductResultsTable",
         row_height=96,
     )
@@ -489,6 +653,23 @@ def export_run_results(
     )
 
     if main_rows:
+        last_main_row = len(main_rows) + 2
+        for row_index in range(3, last_main_row + 1):
+            main.cell(row_index, 5).number_format = "0.00%"
+        main.conditional_formatting.add(
+            f"E3:E{last_main_row}",
+            ColorScaleRule(
+                start_type="num",
+                start_value=0,
+                start_color=PALE_RED,
+                mid_type="num",
+                mid_value=0.75,
+                mid_color=PALE_AMBER,
+                end_type="num",
+                end_value=1,
+                end_color=PALE_GREEN,
+            ),
+        )
         for row_index, row in enumerate(detail_rows, 3):
             for column_index in (6, 7, 8):
                 detail.cell(row_index, column_index).number_format = "0"

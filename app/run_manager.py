@@ -128,6 +128,7 @@ class RunManager(PipelineController):
                         lookback_days=lookback_days,
                         output_dir=settings.output_dir,
                         run_id=str(self._state.get("run_id") or ""),
+                        inventory_workbook_path=settings.product_inventory_workbook_path,
                     )
                     result.output_file = str(output_path)
                     result.output_filename = output_path.name

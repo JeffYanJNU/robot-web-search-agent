@@ -57,6 +57,31 @@ def normalize_product_name(
     return NormalizedProductName(canonical, normalized, model, series, identity_key)
 
 
+def is_same_product_identity(
+    left: NormalizedProductName,
+    right: NormalizedProductName,
+) -> bool:
+    """Return whether two normalized names describe the same product.
+
+    Product pages frequently alternate between a bare model (``SE01``), a
+    brand-prefixed name (``众擎 SE01``), and a package suffix
+    (``Unitree B2-W Kit``).  Exact full-name equality therefore misses obvious
+    duplicates.  A shared explicit model is only treated as the same product
+    when either normalized name contains the other, which avoids merging
+    unrelated brands that happen to reuse a short model code.
+    """
+    left_name = left.normalized_name
+    right_name = right.normalized_name
+    left_model = _key_text(left.model_number)
+    right_model = _key_text(right.model_number)
+
+    if left_name == right_name:
+        return not left_model or not right_model or left_model == right_model
+    if not left_model or left_model != right_model:
+        return False
+    return left_name in right_name or right_name in left_name
+
+
 class ProductIndex:
     def __init__(self, products: list[RobotProduct]):
         self.products = products
@@ -68,19 +93,17 @@ class ProductIndex:
     def find_exact_candidates(
         self, normalized: NormalizedProductName
     ) -> list[RobotProduct]:
-        model_key = _key_text(normalized.model_number)
-        if model_key:
-            return [
-                product for product in self.products
-                if (
-                    _key_text(product.model_number) == model_key
-                    and product.normalized_name == normalized.normalized_name
-                )
-            ]
         return [
-                product for product in self.products
-                if product.normalized_name == normalized.normalized_name
-                and not model_key and not _key_text(product.model_number)
+            product
+            for product in self.products
+            if is_same_product_identity(
+                normalize_product_name(
+                    product.canonical_name,
+                    product.model_number,
+                    product.series_name,
+                ),
+                normalized,
+            )
         ]
 
     def find_series(self, normalized: NormalizedProductName) -> RobotProduct | None:

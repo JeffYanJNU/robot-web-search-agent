@@ -4,7 +4,7 @@ from sqlalchemy import create_engine
 from sqlalchemy.orm import Session
 
 from app.database import Base
-from app.main import list_product_relations
+from app.main import list_product_relations, list_products
 from app.models import ProductCompanyRelation, RobotCompany, RobotProduct
 
 
@@ -53,3 +53,75 @@ def test_relation_listing_returns_product_company_and_evidence():
         assert rows[0]["product_name"] == "测试机器人 X1"
         assert rows[0]["company_name"] == "测试机器人公司"
         assert rows[0]["evidence"][0]["quote"].endswith("X1。")
+
+
+def test_product_and_relation_lists_exclude_non_mainland_companies():
+    engine = create_engine("sqlite+pysqlite:///:memory:")
+    Base.metadata.create_all(engine)
+    with Session(engine) as db:
+        mainland = RobotCompany(
+            canonical_name="Mainland Robotics",
+            original_name="Mainland Robotics",
+            country="China",
+            region_type="mainland_china",
+        )
+        foreign = RobotCompany(
+            canonical_name="Foreign Robotics",
+            original_name="Foreign Robotics",
+            country="Foreign",
+            region_type="foreign",
+        )
+        mainland_product = RobotProduct(
+            canonical_name="Mainland X1",
+            original_name="Mainland X1",
+            normalized_name="mainlandx1",
+            identity_key="mainlandx1|x1",
+            model_number="X1",
+        )
+        foreign_product = RobotProduct(
+            canonical_name="Foreign X1",
+            original_name="Foreign X1",
+            normalized_name="foreignx1",
+            identity_key="foreignx1|x1",
+            model_number="X1",
+        )
+        db.add_all([mainland, foreign, mainland_product, foreign_product])
+        db.flush()
+        db.add_all([
+            ProductCompanyRelation(
+                product_id=mainland_product.product_id,
+                company_id=mainland.company_id,
+                relation_type="developer",
+            ),
+            ProductCompanyRelation(
+                product_id=foreign_product.product_id,
+                company_id=foreign.company_id,
+                relation_type="developer",
+            ),
+        ])
+        db.commit()
+
+        products = list_products(
+            status=None,
+            addition_type=None,
+            launch_status=None,
+            company_id=None,
+            minimum_authenticity_score=None,
+            minimum_novelty_score=None,
+            limit=100,
+            offset=0,
+            db=db,
+        )
+        relations = list_product_relations(
+            status=None,
+            relation_type=None,
+            primary_only=False,
+            limit=200,
+            offset=0,
+            db=db,
+        )
+
+        assert [product.canonical_name for product in products] == ["Mainland X1"]
+        assert [relation["company_name"] for relation in relations] == [
+            "Mainland Robotics"
+        ]

@@ -5,6 +5,7 @@ from app.services.product_rules import (
     calculate_product_relevance,
     calculate_relation_score,
     classify_addition_type,
+    is_same_product_identity,
     normalize_product_name,
 )
 
@@ -35,6 +36,17 @@ def test_scores_separate_product_truth_from_relation_truth():
     )
     assert authenticity == 100
     assert relation == 50
+
+
+def test_product_identity_unifies_bare_branded_and_package_names():
+    bare = normalize_product_name("SE01", "SE01")
+    branded = normalize_product_name("EngineAI SE01", "SE01")
+    package = normalize_product_name("EngineAI SE01 Kit", "SE01")
+    unrelated = normalize_product_name("OtherBrand SE01", "SE01")
+
+    assert is_same_product_identity(bare, branded)
+    assert is_same_product_identity(branded, package)
+    assert not is_same_product_identity(branded, unrelated)
 
 
 def test_database_absence_without_recent_event_is_system_first_seen():

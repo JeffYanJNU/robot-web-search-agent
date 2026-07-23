@@ -89,7 +89,7 @@
 
         <section class="view" id="view-companies">
           <article class="panel">
-            <div class="panel-head responsive"><div><span class="eyebrow">COMPANY LEADS</span><h3>由产品关联出的企业</h3></div><div class="toolbar"><select id="companyStatus"><option value="">全部状态</option><option value="verified">已核验</option><option value="needs_review">待复核</option><option value="rejected">已排除</option></select><select id="companyRegion"><option value="">全部地区</option><option value="mainland_china">中国内地</option><option value="overseas">海外</option></select><button class="button secondary" id="filterCompanies">筛选</button></div></div>
+            <div class="panel-head responsive"><div><span class="eyebrow">COMPANY LEADS</span><h3>由产品关联出的企业</h3></div><div class="toolbar"><select id="companyStatus"><option value="">全部状态</option><option value="verified">已核验</option><option value="needs_review">待复核</option><option value="rejected">已排除</option></select><select id="companyRegion" aria-label="企业地区"><option value="mainland_china">中国大陆</option></select><button class="button secondary" id="filterCompanies">筛选</button></div></div>
             <div class="table-wrap"><table><thead><tr><th>企业名称</th><th>国家 / 地区</th><th>机器人方向</th><th>相关性</th><th>重点评分</th><th>状态</th><th>来源</th><th></th></tr></thead><tbody id="companiesTable"><tr><td colspan="8" class="empty">正在加载…</td></tr></tbody></table></div>
           </article>
         </section>
@@ -129,11 +129,12 @@
       <div class="modal-head"><div><span class="eyebrow">NEW DISCOVERY RUN</span><h2 id="taskModalTitle">新建检索任务</h2></div><button class="icon-button" data-close-modal="taskModal">×</button></div>
       <form id="taskForm" class="form-grid">
         <label class="span-2">任务类型<select name="pipeline_mode"><option value="product">机器人产品专项（推荐）</option><option value="company">企业发现兼容模式</option></select></label>
+        <label class="span-2">已有产品库存文件<input name="inventory_workbook_path" type="text" value="D:\GDAI\GDAI代码\agent测试\产品库存量数据导出（世恩）-2026.07.21(2).xlsx" required></label>
         <label>回溯天数<input name="lookback_days" type="number" min="1" max="90" value="14" required></label>
         <label>查询预算<input name="max_queries" type="number" min="2" max="60" value="16" required></label>
         <label class="span-2">搜索模式<select name="search_mode"><option value="native">内置检索</option><option value="hybrid">混合检索</option><option value="gpt_researcher">GPT Researcher</option></select></label>
         <fieldset class="span-2"><legend>搜索提供商</legend><label class="check"><input type="checkbox" name="providers" value="tavily" checked>Tavily</label><label class="check"><input type="checkbox" name="providers" value="bing">Bing</label></fieldset>
-        <p class="form-hint span-2">启动前会真实调用一次当前模型 API；测试失败时不会开始搜索，也不会消耗网页结果。</p>
+        <p class="form-hint span-2">启动前会校验库存 Excel 和当前模型 API；任务完成后仅按库存表“产品名称”列计算 E/F 列，不使用其他字段。</p>
         <div class="form-actions span-2"><button type="button" class="button ghost" data-close-modal="taskModal">取消</button><button type="submit" class="button primary">启动后台任务</button></div>
       </form>
     </div>

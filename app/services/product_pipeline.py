@@ -365,8 +365,8 @@ class ProductDiscoveryPipeline:
 
         cutoff = (date.today() - timedelta(days=lookback_days)).isoformat()
         texts = [
-            (f'"{product_name}" 官方 发布 产品', "补充官方产品来源"),
-            (f'"{product_name}" 研发 制造 公司', "补充产品企业关系"),
+            (f'中国大陆 企业 "{product_name}" 官方 发布 产品', "补充官方产品来源"),
+            (f'中国大陆 企业 "{product_name}" 研发 制造 公司', "补充产品企业关系"),
         ]
         planned: list[SearchQuery] = []
         for text, reason in texts:
@@ -633,6 +633,8 @@ class ProductDiscoveryPipeline:
         grouped: dict[tuple[str, str], list[tuple[str, ExtractedCompanyRelation]]] = {}
         for source_url, source in aggregate.sources.items():
             for relation in source.relations:
+                if relation.company_region_type != "mainland_china":
+                    continue
                 key = (normalize_company_name(relation.company_name), relation.relation_type)
                 grouped.setdefault(key, []).append((source_url, relation))
         resolved: list[ResolvedRelationGroup] = []
@@ -645,6 +647,8 @@ class ProductDiscoveryPipeline:
                     identity, self.settings.database_duplicate_threshold
                 )
                 company = similar.company if similar else None
+            if company is not None and company.region_type != "mainland_china":
+                company = None
             if company is None:
                 can_create = (
                     relation_type in STRONG_RELATION_TYPES
@@ -687,32 +691,24 @@ class ProductDiscoveryPipeline:
         candidates: list[RobotProduct],
         company_ids: set[int],
     ) -> RobotProduct | None:
+        # A product is a global entity.  Different extracted company aliases or
+        # relationship candidates must become additional relations on that
+        # product, not duplicate product records.
         if not candidates:
             return None
-        if not company_ids:
-            return candidates[0]
-        candidate_ids = [item.product_id for item in candidates]
-        matched_product_id = db.scalar(
-            select(ProductCompanyRelation.product_id).where(
-                ProductCompanyRelation.product_id.in_(candidate_ids),
-                ProductCompanyRelation.company_id.in_(company_ids),
-            ).limit(1)
-        )
-        if matched_product_id is None:
-            related_product_ids = set(
-                db.scalars(
-                    select(ProductCompanyRelation.product_id).where(
-                        ProductCompanyRelation.product_id.in_(candidate_ids)
-                    )
-                )
+        if company_ids:
+            candidate_ids = [item.product_id for item in candidates]
+            matched_product_id = db.scalar(
+                select(ProductCompanyRelation.product_id).where(
+                    ProductCompanyRelation.product_id.in_(candidate_ids),
+                    ProductCompanyRelation.company_id.in_(company_ids),
+                ).limit(1)
             )
-            unscoped = [
-                item for item in candidates if item.product_id not in related_product_ids
-            ]
-            return unscoped[0] if len(unscoped) == 1 else None
-        return next(
-            item for item in candidates if item.product_id == matched_product_id
-        )
+            if matched_product_id is not None:
+                return next(
+                    item for item in candidates if item.product_id == matched_product_id
+                )
+        return candidates[0]
 
     def _upsert_product_source(
         self,

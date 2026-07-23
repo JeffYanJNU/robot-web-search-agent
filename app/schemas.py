@@ -11,6 +11,15 @@ class RunRequest(BaseModel):
     search_mode: Literal["native", "gpt_researcher", "hybrid"] | None = None
     search_providers: list[Literal["tavily", "bing"]] | None = Field(default=None, min_length=1)
     pipeline_mode: Literal["product", "company"] = "product"
+    inventory_workbook_path: str | None = Field(default=None, max_length=2000)
+
+    @field_validator("inventory_workbook_path", mode="before")
+    @classmethod
+    def strip_inventory_workbook_path(cls, value: object) -> str | None:
+        if value is None:
+            return None
+        stripped = str(value).strip()
+        return stripped or None
 
 
 class EvidenceOut(BaseModel):

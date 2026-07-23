@@ -27,8 +27,12 @@ from app.services.pipeline import (
     apply_verification_decision,
     recalculate_company_priority,
 )
-from app.services.product_pipeline import ProductDiscoveryPipeline
 from app.services.product_backfill import backfill_legacy_products
+from app.services.product_inventory_matcher import (
+    ProductInventoryWorkbookError,
+    load_inventory_product_names,
+)
+from app.services.product_pipeline import ProductDiscoveryPipeline
 from app.services.result_exporter import export_run_results
 
 settings = get_settings()
@@ -43,6 +47,8 @@ def settings_for_run(request: RunRequest):
         updates["search_mode"] = request.search_mode
     if request.search_providers:
         updates["search_providers"] = ",".join(request.search_providers)
+    if request.inventory_workbook_path:
+        updates["product_inventory_workbook_path"] = request.inventory_workbook_path
     return active.model_copy(update=updates)
 
 
@@ -54,6 +60,13 @@ def require_available_model(run_settings) -> dict:
             detail=f'模型预检失败：{test_result["message"]}',
         )
     return test_result
+
+
+def require_available_inventory_workbook(run_settings) -> None:
+    try:
+        load_inventory_product_names(run_settings.product_inventory_workbook_path)
+    except ProductInventoryWorkbookError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
 @asynccontextmanager
@@ -94,6 +107,7 @@ def health() -> dict[str, str]:
 def run_pipeline(request: RunRequest, db: Session = Depends(get_db)) -> RunResult:
     run_settings = settings_for_run(request)
     require_available_model(run_settings)
+    require_available_inventory_workbook(run_settings)
     pipeline = (
         ProductDiscoveryPipeline(run_settings)
         if request.pipeline_mode == "product"
@@ -108,6 +122,7 @@ def run_pipeline(request: RunRequest, db: Session = Depends(get_db)) -> RunResul
         pipeline_mode=request.pipeline_mode,
         lookback_days=request.lookback_days,
         output_dir=settings.output_dir,
+        inventory_workbook_path=run_settings.product_inventory_workbook_path,
     )
     result.output_file = str(output_path)
     result.output_filename = output_path.name
@@ -120,6 +135,7 @@ def start_pipeline(request: RunRequest) -> dict:
         raise HTTPException(status_code=409, detail="已有采集任务正在运行")
     run_settings = settings_for_run(request)
     require_available_model(run_settings)
+    require_available_inventory_workbook(run_settings)
     try:
         return run_manager.start(
             run_settings, request.lookback_days, request.max_queries,
@@ -302,10 +318,19 @@ def list_products(
     offset: int = Query(default=0, ge=0),
     db: Session = Depends(get_db),
 ) -> list[RobotProduct]:
+    mainland_relation_exists = (
+        select(ProductCompanyRelation.relation_id)
+        .join(RobotCompany, RobotCompany.company_id == ProductCompanyRelation.company_id)
+        .where(
+            ProductCompanyRelation.product_id == RobotProduct.product_id,
+            RobotCompany.region_type == "mainland_china",
+        )
+        .exists()
+    )
     stmt = select(RobotProduct).options(
         selectinload(RobotProduct.sources),
         selectinload(RobotProduct.company_relations),
-    ).order_by(
+    ).where(mainland_relation_exists).order_by(
         RobotProduct.authenticity_score.desc(), RobotProduct.created_at.desc()
     )
     if status:
@@ -347,8 +372,11 @@ def get_product_relations(
         raise HTTPException(status_code=404, detail="产品不存在")
     relations = list(
         db.scalars(
-            select(ProductCompanyRelation).where(
-                ProductCompanyRelation.product_id == product_id
+            select(ProductCompanyRelation)
+            .join(RobotCompany, RobotCompany.company_id == ProductCompanyRelation.company_id)
+            .where(
+                ProductCompanyRelation.product_id == product_id,
+                RobotCompany.region_type == "mainland_china",
             )
         )
     )
@@ -388,6 +416,7 @@ def list_product_relations(
             ProductCompanyRelation.relation_score.desc(),
             ProductCompanyRelation.created_at.desc(),
         )
+        .where(RobotCompany.region_type == "mainland_china")
     )
     if status:
         stmt = stmt.where(ProductCompanyRelation.verification_status == status)

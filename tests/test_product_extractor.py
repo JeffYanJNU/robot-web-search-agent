@@ -151,3 +151,61 @@ def test_product_extractor_repairs_common_model_shape_errors_per_candidate(monke
     assert extractor.last_report.valid_candidates == 1
     assert extractor.last_report.invalid_candidates == 1
     assert extractor.last_report.repaired_candidates == 2
+
+
+def test_product_extractor_rejects_non_mainland_and_distributor_only_products(monkeypatch):
+    foreign_quote = "Overseas Robotics released the Rover X1 robot."
+    distributor_quote = "Mainland Distributor distributes the Rover X2 robot."
+    payload = {
+        "candidates": [
+            {
+                "original_name": "Rover X1",
+                "canonical_name": "Rover X1",
+                "model_number": "X1",
+                "field_evidence": [{
+                    "evidence_type": "product_launch",
+                    "quote": foreign_quote,
+                    "value": "Rover X1",
+                }],
+                "company_relations": [{
+                    "company_name": "Overseas Robotics",
+                    "relation_type": "developer",
+                    "evidence_quote": foreign_quote,
+                    "company_region_type": "foreign",
+                }],
+            },
+            {
+                "original_name": "Rover X2",
+                "canonical_name": "Rover X2",
+                "model_number": "X2",
+                "field_evidence": [{
+                    "evidence_type": "product_identity",
+                    "quote": distributor_quote,
+                    "value": "Rover X2",
+                }],
+                "company_relations": [{
+                    "company_name": "Mainland Distributor",
+                    "relation_type": "distributor",
+                    "evidence_quote": distributor_quote,
+                    "company_region_type": "mainland_china",
+                }],
+            },
+        ]
+    }
+    monkeypatch.setattr(
+        "app.services.product_extractor.httpx.post",
+        lambda *args, **kwargs: FakeResponse(payload),
+    )
+    now = datetime.now(timezone.utc)
+    extractor = ProductExtractor(Settings(deepseek_api_key="test"))
+    candidates = extractor.extract(Page(
+        "https://example.com/robots",
+        "Robot products",
+        f"{foreign_quote} {distributor_quote}",
+        now,
+        "d" * 64,
+        now,
+    ))
+
+    assert candidates == []
+    assert extractor.last_report.invalid_candidates == 2

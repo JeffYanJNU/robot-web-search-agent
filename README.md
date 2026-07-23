@@ -164,6 +164,7 @@ uvicorn app.main:app --reload
 - `PRODUCT_NOVELTY_THRESHOLD=75`：新产品置信度参考阈值
 - `RELATION_AUTO_VERIFY_SCORE=80`：产品—企业关系自动核验分数
 - `DEFAULT_PIPELINE_MODE=product`：定时任务默认运行产品或企业模式
+- `PRODUCT_INVENTORY_WORKBOOK_PATH=D:\GDAI\GDAI代码\agent测试\产品库存量数据导出（世恩）-2026.07.21(2).xlsx`：任务开始前选定的已有产品库存表；导出 E/F 列只比较其中的“产品名称”
 - `OUTPUT_DIR=output`：任务结果 Excel 输出目录
 - `MODEL_CONFIG_PATH=model_configs.json`：网页模型配置的本地持久化文件（含密钥，已加入 `.gitignore`）
 

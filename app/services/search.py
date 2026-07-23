@@ -128,7 +128,11 @@ def build_queries(lookback_days: int, max_queries: int) -> list[SearchQuery]:
 def build_product_queries(lookback_days: int, max_queries: int) -> list[SearchQuery]:
     since = date.today() - timedelta(days=lookback_days)
     return [
-        SearchQuery(query, reason="机器人产品专项搜索", start_date=since.isoformat())
+        SearchQuery(
+            f"中国大陆 企业 {query}",
+            reason="机器人产品专项搜索",
+            start_date=since.isoformat(),
+        )
         for query in PRODUCT_DISCOVERY_QUERIES_ZH[:max_queries]
     ]
 

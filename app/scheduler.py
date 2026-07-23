@@ -28,6 +28,7 @@ def scheduled_run(settings: Settings, model_store: ModelConfigStore | None = Non
             lookback_days=settings.default_lookback_days,
             output_dir=settings.output_dir,
             run_id="scheduled",
+            inventory_workbook_path=settings.product_inventory_workbook_path,
         )
         result.output_file = str(output_path)
         result.output_filename = output_path.name

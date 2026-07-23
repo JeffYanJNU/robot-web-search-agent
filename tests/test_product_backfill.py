@@ -1,6 +1,6 @@
 import json
 
-from sqlalchemy import create_engine, select
+from sqlalchemy import create_engine, func, select
 from sqlalchemy.orm import Session
 
 from app.database import Base
@@ -32,3 +32,31 @@ def test_legacy_products_become_review_only_historical_seeds():
         assert relation is not None
         assert relation.relation_type == "unknown"
         assert relation.is_primary is False
+
+
+def test_legacy_company_aliases_share_one_product_record():
+    engine = create_engine("sqlite+pysqlite:///:memory:")
+    Base.metadata.create_all(engine)
+    with Session(engine) as db:
+        db.add_all([
+            RobotCompany(
+                canonical_name="EngineAI",
+                original_name="EngineAI",
+                country="China",
+                region_type="mainland_china",
+                representative_products=json.dumps(["SE01"]),
+            ),
+            RobotCompany(
+                canonical_name="EngineAI Robotics",
+                original_name="EngineAI Robotics",
+                country="China",
+                region_type="mainland_china",
+                representative_products=json.dumps(["EngineAI SE01"]),
+            ),
+        ])
+        db.commit()
+
+        assert backfill_legacy_products(db) == 1
+        db.commit()
+        assert db.scalar(select(func.count()).select_from(RobotProduct)) == 1
+        assert db.scalar(select(func.count()).select_from(ProductCompanyRelation)) == 2

@@ -12,6 +12,7 @@ from app.config import Settings
 from app.services.fetcher import Page
 from app.services.product_rules import (
     PRODUCT_EVENT_TYPES,
+    STRONG_RELATION_TYPES,
     calculate_product_relevance,
 )
 from app.services.scoring import source_kind
@@ -34,7 +35,7 @@ RelationType = Literal[
 RegionType = Literal[
     "mainland_china", "hong_kong", "macau", "taiwan", "foreign", "unknown",
 ]
-PRODUCT_EXTRACTOR_PROMPT_VERSION = "2026-07-22.product.2"
+PRODUCT_EXTRACTOR_PROMPT_VERSION = "2026-07-22.product.3"
 
 
 @dataclass
@@ -161,6 +162,13 @@ product_relevance 和 confidence 必须是 0 到 100 的整数，不能返回 di
 10. 不输出 Markdown。"""
 
 
+SYSTEM_PROMPT += """
+范围限制：本任务仅收录中国大陆企业自主研发、制造、持有品牌或正式发布的机器人产品。
+排除中国香港、中国澳门、中国台湾及外国企业的产品；仅在中国大陆销售、代理、采购、投资或合作，不能视为中国大陆企业产品。
+如果无法从正文明确确认产品所属企业为中国大陆主体，返回时不要包含该候选产品。
+"""
+
+
 class ProductExtractor:
     def __init__(self, settings: Settings):
         self.settings = settings
@@ -244,6 +252,21 @@ class ProductExtractor:
                 if self._valid_relation(relation, product_terms, page_text)
             ]
             report.evidence_rejected += original_relation_count - len(candidate.company_relations)
+            mainland_relations = [
+                relation
+                for relation in candidate.company_relations
+                if relation.company_region_type == "mainland_china"
+            ]
+            report.evidence_rejected += (
+                len(candidate.company_relations) - len(mainland_relations)
+            )
+            candidate.company_relations = mainland_relations
+            if not any(
+                relation.relation_type in STRONG_RELATION_TYPES
+                for relation in candidate.company_relations
+            ):
+                report.invalid_candidates += 1
+                continue
             candidate.product_relevance = calculate_product_relevance(
                 has_identity_evidence=True,
                 has_event_evidence=any(

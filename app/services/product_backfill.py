@@ -25,18 +25,9 @@ def backfill_legacy_products(db: Session) -> int:
                 continue
             normalized = normalize_product_name(name)
             candidates = index.find_exact_candidates(normalized)
-            product = next(
-                (
-                    candidate for candidate in candidates
-                    if db.scalar(
-                        select(ProductCompanyRelation.relation_id).where(
-                            ProductCompanyRelation.product_id == candidate.product_id,
-                            ProductCompanyRelation.company_id == company.company_id,
-                        )
-                    ) is not None
-                ),
-                None,
-            )
+            # Products are shared entities.  A new company mention adds another
+            # relation instead of cloning the same product for that company.
+            product = candidates[0] if candidates else None
             if product is None:
                 product = RobotProduct(
                     canonical_name=normalized.canonical_name,

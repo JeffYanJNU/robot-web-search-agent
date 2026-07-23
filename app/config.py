@@ -40,6 +40,9 @@ class Settings(BaseSettings):
     relation_auto_verify_score: int = Field(default=80, ge=0, le=100)
     default_pipeline_mode: str = "product"
     output_dir: str = "output"
+    product_inventory_workbook_path: str = (
+        r"D:\GDAI\GDAI代码\agent测试\产品库存量数据导出（世恩）-2026.07.21(2).xlsx"
+    )
 
 
 @lru_cache
