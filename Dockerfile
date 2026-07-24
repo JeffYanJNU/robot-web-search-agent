@@ -3,6 +3,5 @@ WORKDIR /app
 COPY pyproject.toml ./
 COPY app ./app
 RUN pip install --no-cache-dir ".[research]"
-COPY dashboard.py ./
 COPY company_registry_checker_v2.py ./
-EXPOSE 8000 8501
+EXPOSE 8000

@@ -20,6 +20,13 @@ class DatabaseCompanyMatch:
     method: str
 
 
+@dataclass(frozen=True)
+class CompanyIdentityCandidate:
+    names: tuple[str, ...]
+    official_website: str = ""
+    unified_social_credit_code: str = ""
+
+
 def _names(values: list[str]) -> list[str]:
     result: list[str] = []
     seen: set[str] = set()
@@ -79,19 +86,48 @@ class DatabaseCompanyIndex:
         self.matcher = CompanyMatcher(records) if records else None
 
     def find_exact(self, item: ExtractedCompanyCandidate) -> RobotCompany | None:
+        return self.find_identity(CompanyIdentityCandidate(
+            names=tuple(_names([
+                item.canonical_name, item.original_name, item.chinese_name,
+                item.english_name, item.ai_translated_name,
+            ])),
+            official_website=item.official_website,
+            unified_social_credit_code=item.unified_social_credit_code,
+        ))
+
+    def find_identity(self, item: CompanyIdentityCandidate) -> RobotCompany | None:
         code = item.unified_social_credit_code.strip().upper()
         domain = normalize_domain(item.official_website)
         if code and code in self.by_code:
             return self.by_code[code]
         if domain and domain in self.by_domain:
             return self.by_domain[domain]
-        for name in _names([
-            item.canonical_name, item.original_name, item.chinese_name,
-            item.english_name, item.ai_translated_name,
-        ]):
+        for name in _names(list(item.names)):
             if company := self.by_name.get(normalize_company_name(name)):
                 return company
         return None
+
+    def find_identity_similar(
+        self,
+        item: CompanyIdentityCandidate,
+        threshold: float = 75,
+    ) -> DatabaseCompanyMatch | None:
+        exact = self.find_identity(item)
+        if exact is not None:
+            return DatabaseCompanyMatch(exact, 100.0, exact.canonical_name, "精确索引")
+        if self.matcher is None:
+            return None
+        best: DatabaseCompanyMatch | None = None
+        for query_name in _names(list(item.names)):
+            matches, _ambiguous = self.matcher.match(query_name, top_k=3)
+            for match in matches:
+                company = self.record_companies[match.profile.record.row]
+                if best is None or match.score > best.similarity:
+                    best = DatabaseCompanyMatch(
+                        company, match.score, match.profile.record.name,
+                        f"V2·{match.conclusion}",
+                    )
+        return best if best and best.similarity >= threshold else None
 
     def find(
         self,

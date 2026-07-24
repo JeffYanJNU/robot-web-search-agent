@@ -35,6 +35,27 @@ class Settings(BaseSettings):
     auto_verify_require_evidence_date: bool = True
     baseline_workbook_path: str = "已入库企业信息-2026.07.09.xlsx"
     database_duplicate_threshold: float = Field(default=75, ge=0, le=100)
+    product_auto_verify_score: int = Field(default=80, ge=0, le=100)
+    product_novelty_threshold: int = Field(default=75, ge=0, le=100)
+    relation_auto_verify_score: int = Field(default=80, ge=0, le=100)
+    qcc_app_key: str = ""
+    qcc_secret_key: str = ""
+    qcc_config_path: str = "qcc_config.json"
+    qcc_fuzzy_search_url: str = "https://api.qichacha.com/FuzzySearch/GetList"
+    qcc_airia_key: str = ""
+    qcc_airia_url: str = (
+        "https://industry.airia.net.cn/admin-prod-api/api/v1/app/handleData/unified"
+    )
+    qcc_airia_api_id: int = Field(default=1174, ge=1)
+    qcc_airia_page_size: int = Field(default=20, ge=1, le=100)
+    qcc_timeout_seconds: int = Field(default=10, ge=1, le=60)
+    qcc_max_api_calls: int = Field(default=20, ge=0, le=1000)
+    qcc_company_match_threshold: float = Field(default=75, ge=0, le=100)
+    default_pipeline_mode: str = "product"
+    output_dir: str = "output"
+    product_inventory_workbook_path: str = (
+        r"D:\GDAI\GDAI代码\agent测试\产品库存量数据导出（世恩）-2026.07.21(2).xlsx"
+    )
 
 
 @lru_cache

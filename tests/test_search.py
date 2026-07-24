@@ -1,6 +1,7 @@
 from app.config import Settings
 from app.services.search import (
-    SearchClient, SearchQuery, SearchResult, build_queries, canonicalize_url,
+    SearchClient, SearchQuery, SearchResult, build_product_queries, build_queries,
+    canonicalize_url,
     load_gpt_researcher_retriever,
 )
 
@@ -12,6 +13,13 @@ def test_build_queries_is_bounded_and_mainland_only():
     assert all(query.start_date for query in queries)
     assert {query.market for query in queries} == {"zh-CN"}
     assert all("中国" in query.text for query in queries)
+
+
+def test_product_queries_are_explicitly_mainland_company_only():
+    queries = build_product_queries(7, 10)
+    assert queries
+    assert all("中国大陆" in query.text for query in queries)
+    assert all("企业" in query.text for query in queries)
 
 
 def test_parallel_sources_merge_and_deduplicate_canonical_urls(monkeypatch):

@@ -16,7 +16,6 @@ dependencies = [
   "rapidfuzz>=3.9",
   "requests>=2.32",
   "sqlalchemy>=2.0",
-  "streamlit>=1.40",
   "uvicorn[standard]>=0.32",
 ]
 

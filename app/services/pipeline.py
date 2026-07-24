@@ -19,6 +19,7 @@ from app.services.extractor import (
     ExtractedCompanyCandidate,
 )
 from app.services.fetcher import Page, PageFetcher
+from app.services.model_api import http_status_code
 from app.services.planner import EvidenceGapPlanner
 from app.services.scoring import (
     calculate_priority_score,
@@ -33,6 +34,24 @@ class PipelineController(Protocol):
     def checkpoint(self) -> bool: ...
 
     def update(self, event: str, **data) -> None: ...
+
+    def model_call_succeeded(self) -> None: ...
+
+    def model_call_failed(self, status_code: int | None) -> bool: ...
+
+
+def record_model_success(controller: PipelineController | None) -> None:
+    callback = getattr(controller, "model_call_succeeded", None)
+    if callback:
+        callback()
+
+
+def record_model_failure(
+    controller: PipelineController | None,
+    exc: Exception,
+) -> bool:
+    callback = getattr(controller, "model_call_failed", None)
+    return bool(callback(http_status_code(exc))) if callback else False
 
 
 @dataclass(frozen=True)
@@ -269,6 +288,7 @@ class CompanyDiscoveryPipeline:
                         controller.update("skipped", result=output)
                     continue
                 seen_urls.add(result.url)
+                auto_pause_requested = False
                 try:
                     if controller:
                         controller.update(
@@ -312,7 +332,12 @@ class CompanyDiscoveryPipeline:
                         output.reextracted += 1
                     if controller:
                         controller.update("extracting", result=output, message="网页抓取完成，开始结构化抽取")
-                    candidates = self.extractor.extract(page)
+                    try:
+                        candidates = self.extractor.extract(page)
+                    except Exception as exc:
+                        auto_pause_requested = record_model_failure(controller, exc)
+                        raise
+                    record_model_success(controller)
                     output.candidates += len(candidates)
                     if not candidates:
                         output.skipped += 1
@@ -339,6 +364,7 @@ class CompanyDiscoveryPipeline:
                                         ),
                                     )
                         except Exception as exc:
+                            translation_auto_pause = record_model_failure(controller, exc)
                             output.errors.append(
                                 f"英文企业名 AI 翻译失败 [{candidate.canonical_name}]: {exc}"
                             )
@@ -346,6 +372,9 @@ class CompanyDiscoveryPipeline:
                                 controller.update(
                                     "error", result=output, message=output.errors[-1]
                                 )
+                            if translation_auto_pause and controller:
+                                if not controller.checkpoint():
+                                    return output
                         classification = classify_addition(candidate, self.baseline, lookback_days)
                         if candidate.robot_relevance >= self.settings.min_robot_relevance:
                             planned = planner.plan_for_candidate(
@@ -421,6 +450,8 @@ class CompanyDiscoveryPipeline:
                             )
                             if saved_company is not None:
                                 company_index.upsert(saved_company)
+                                if saved_company.company_id not in output.company_ids:
+                                    output.company_ids.append(saved_company.company_id)
                             output.addition_types[classification.addition_type] = (
                                 output.addition_types.get(classification.addition_type, 0) + 1
                             )
@@ -432,6 +463,9 @@ class CompanyDiscoveryPipeline:
                     output.errors.append(f"处理失败 [{result.url}]: {exc}")
                     if controller:
                         controller.update("error", result=output, message=output.errors[-1])
+                    if auto_pause_requested and controller:
+                        if not controller.checkpoint():
+                            return output
         return output
 
     @staticmethod

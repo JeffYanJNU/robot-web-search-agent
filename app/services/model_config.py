@@ -161,8 +161,13 @@ class ModelConfigStore:
             self._save()
 
     def active_settings(self) -> Settings:
+        return self.settings_for(self._active_id)
+
+    def settings_for(self, model_id: str) -> Settings:
         with self._lock:
-            item = self._models[self._active_id]
+            item = self._models.get(model_id)
+            if item is None:
+                raise KeyError("模型配置不存在")
             return self._settings.model_copy(
                 update={
                     "deepseek_api_key": item.api_key or "",
