@@ -40,6 +40,25 @@ ACTION_LABELS = {
 }
 
 
+def initial_run_result(settings: Settings) -> RunResult:
+    airia_configured = bool(
+        settings.qcc_airia_key.strip() and settings.qcc_airia_url.strip()
+    )
+    official_configured = bool(
+        settings.qcc_app_key.strip()
+        and settings.qcc_secret_key.strip()
+        and settings.qcc_fuzzy_search_url.strip()
+    )
+    provider = "airia" if airia_configured else (
+        "qcc_official" if official_configured else ""
+    )
+    return RunResult(
+        qcc_configured=bool(provider),
+        qcc_provider=provider,
+        qcc_api_limit=settings.qcc_max_api_calls,
+    )
+
+
 class RunManager(PipelineController):
     """Own one discovery job and expose a thread-safe live snapshot."""
 
@@ -90,10 +109,25 @@ class RunManager(PipelineController):
                 status="running",
                 current_action=ACTION_LABELS["starting"],
                 max_queries=max_queries,
+                result=initial_run_result(settings).model_dump(),
                 started_at=utc_iso(),
                 updated_at=utc_iso(),
             )
             self._append_log_locked("任务已启动")
+            qcc_result = self._state["result"]
+            if qcc_result["qcc_configured"]:
+                provider_label = (
+                    "Airia" if qcc_result["qcc_provider"] == "airia"
+                    else "企查查官方"
+                )
+                self._append_log_locked(
+                    f"企业工商查询已配置：{provider_label}，"
+                    f"本任务最多调用 {qcc_result['qcc_api_limit']} 次"
+                )
+            else:
+                self._append_log_locked(
+                    "企业工商查询未配置：仅使用本地企业匹配"
+                )
             self._thread = Thread(
                 target=self._worker,
                 args=(settings, lookback_days, max_queries, pipeline_mode),
@@ -334,6 +368,13 @@ def build_current_analysis(db, state: dict[str, Any]) -> dict[str, Any]:
         observations.append(
             f"有 {result['database_duplicates']} 个候选与当前数据库名称相似度达到阈值，已转入重复候选表。"
         )
+    if result.get("qcc_api_calls", 0):
+        observations.append(
+            f"企业工商模糊搜索已调用 {result['qcc_api_calls']}/"
+            f"{result.get('qcc_api_limit', 0)} 次，确认 {result.get('qcc_matches', 0)} 个工商主体。"
+        )
+    if result.get("qcc_api_limit_reached"):
+        observations.append("企业工商查询 API 已达到本任务调用上限，后续企业仅使用本地匹配。")
     if not observations:
         observations.append("当前样本仍较少，继续采集后再判断区域和赛道趋势。")
     return {

@@ -165,6 +165,29 @@ uvicorn app.main:app --reload
 - `RELATION_AUTO_VERIFY_SCORE=80`：产品—企业关系自动核验分数
 - `DEFAULT_PIPELINE_MODE=product`：定时任务默认运行产品或企业模式
 - `PRODUCT_INVENTORY_WORKBOOK_PATH=D:\GDAI\GDAI代码\agent测试\产品库存量数据导出（世恩）-2026.07.21(2).xlsx`：任务开始前选定的已有产品库存表；导出 E/F 列只比较其中的“产品名称”
+- `QCC_AIRIA_KEY`：Airia 中转接口请求头 `key` 的值，不要提交到 Git
+- `QCC_AIRIA_URL=https://industry.airia.net.cn/admin-prod-api/api/v1/app/handleData/unified`：Airia 统一接口
+- `QCC_AIRIA_API_ID=1174`：Airia 企业模糊搜索 API ID
+- `QCC_AIRIA_PAGE_SIZE=20`：Airia 每次请求的候选数量
+- `QCC_APP_KEY` / `QCC_SECRET_KEY`：可选的企查查开放平台官方直连凭证
+- `QCC_MAX_API_CALLS=20`：每个任务最多调用多少次企业工商模糊搜索，设为 `0` 可关闭
+- `QCC_COMPANY_MATCH_THRESHOLD=75`：保留的兼容配置；当前策略会在有效工商候选中直接采用名称相似度最高的一家
+- `QCC_FUZZY_SEARCH_URL=https://api.qichacha.com/FuzzySearch/GetList`：企查查 886 企业模糊搜索接口
+- `QCC_CONFIG_PATH=qcc_config.json`：网页“系统设置 → 企业工商查询配置”的本地持久化文件（含密钥，已加入 `.gitignore`）
+
+产品专项流程会先使用本地企业名称、信用代码和模糊索引；本地无法确认且存在明确研发、制造、品牌归属等强关系证据时，才调用企业工商模糊搜索。工商提供商在“系统设置 → 企业工商查询配置”中明确选择：Airia 模式只发送 Header Key 到 `apiId=1174`；企查查官方模式只使用 App Key + Secret Key 直连 886 接口，且强制不经过 Airia。接口结果仅用于确认工商主体，产品—企业关系仍以网页原文证据为准。相同关键词在单次任务内使用缓存，不重复消耗调用次数。
+
+工商接口命中后，程序会在所有有效返回候选中采用名称相似度最高的一家；导出主表 B 列显示企业简称、工商全称和统一社会信用代码。未命中时会明确标注“待工商核验”，不会把网页简称当作已核验全称。“工商候选诊断”工作表逐条记录所有返回候选的查询名称、候选企业、信用代码、名称相似度、是否采用和原因；任务页面显示最近 20 条诊断。
+
+Airia 访问 Key、企查查官方 App Key 和 Secret Key 在“系统设置 → 企业工商查询配置”中保存和测试。两种调用模式严格互斥，配置文件不会提交到 Git，接口响应、任务状态和导出文件不会返回密钥明文。
+
+网页端支持的全部 API 凭证：
+
+- 模型 API Key：在“系统设置 → 模型配置”中添加或编辑，可保存并切换当前模型；
+- Tavily API Key、Bing API Key：在“新建检索任务”窗口填写，仅用于本次任务；
+- Airia 访问 Key、企查查官方 App Key 和 Secret Key：在“系统设置 → 企业工商查询配置”中保存、切换和测试。
+
+Tavily、Bing 任务密钥留空时会使用服务器 `.env` 配置；所有接口响应、任务状态和导出文件均不会返回密钥明文。
 - `OUTPUT_DIR=output`：任务结果 Excel 输出目录
 - `MODEL_CONFIG_PATH=model_configs.json`：网页模型配置的本地持久化文件（含密钥，已加入 `.gitignore`）
 

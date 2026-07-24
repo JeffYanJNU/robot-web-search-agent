@@ -18,7 +18,8 @@ from app.models import (
 from app.run_manager import RunManager, build_current_analysis
 from app.scheduler import create_scheduler
 from app.schemas import (
-    ClearDatabaseRequest, CompanyOut, DuplicateMatchOut, ProductOut, RunRequest, RunResult,
+    ClearDatabaseRequest, CompanyOut, DuplicateMatchOut, ProductOut, QccTestRequest,
+    RunRequest, RunResult,
 )
 from app.services.model_config import ModelConfigInput, ModelConfigStore
 from app.services.model_api import test_model_api
@@ -33,15 +34,18 @@ from app.services.product_inventory_matcher import (
     load_inventory_product_names,
 )
 from app.services.product_pipeline import ProductDiscoveryPipeline
+from app.services.qcc_config import QccConfigInput, QccConfigStore
+from app.services.qcc_fuzzy_search import QccApiError, QccFuzzySearchClient
 from app.services.result_exporter import export_run_results
 
 settings = get_settings()
 run_manager = RunManager()
 model_store = ModelConfigStore(settings)
+qcc_store = QccConfigStore(settings)
 
 
 def settings_for_run(request: RunRequest):
-    active = model_store.active_settings()
+    active = qcc_store.settings(model_store.active_settings())
     updates: dict[str, str] = {}
     if request.search_mode:
         updates["search_mode"] = request.search_mode
@@ -49,6 +53,10 @@ def settings_for_run(request: RunRequest):
         updates["search_providers"] = ",".join(request.search_providers)
     if request.inventory_workbook_path:
         updates["product_inventory_workbook_path"] = request.inventory_workbook_path
+    if request.tavily_api_key is not None:
+        updates["tavily_api_key"] = request.tavily_api_key.get_secret_value()
+    if request.bing_api_key is not None:
+        updates["bing_api_key"] = request.bing_api_key.get_secret_value()
     return active.model_copy(update=updates)
 
 
@@ -231,6 +239,60 @@ def test_model_config(model_id: str) -> dict:
             "message": "模型尚未配置 API Key",
         }
     return test_model_api(model_settings)
+
+
+@app.post("/qcc/test")
+def test_qcc_api(request: QccTestRequest) -> dict:
+    test_settings = qcc_store.settings(model_store.active_settings())
+    updates: dict[str, str | int] = {"qcc_max_api_calls": 1}
+    client = QccFuzzySearchClient(test_settings.model_copy(update=updates))
+    if not client.configured:
+        raise HTTPException(
+            status_code=400,
+            detail="请填写 Airia Key，或同时填写企查查官方 App Key 和 Secret Key",
+        )
+    try:
+        candidates = client.search(request.keyword)
+    except QccApiError as exc:
+        raise HTTPException(status_code=502, detail=str(exc)) from exc
+    return {
+        "success": True,
+        "keyword": request.keyword,
+        "provider": client.provider,
+        "api_calls": client.calls_used,
+        "candidate_count": len(candidates),
+        "response_code": client.last_response_code,
+        "response_message": client.last_response_message,
+        "response_shape": client.last_response_shape,
+        "candidates": [
+            {
+                "name": candidate.name,
+                "credit_code": candidate.credit_code,
+                "status": candidate.status,
+                "operator_name": candidate.operator_name,
+                "start_date": candidate.start_date,
+                "registration_number": candidate.registration_number,
+                "address": candidate.address,
+                "key_no": candidate.key_no,
+            }
+            for candidate in candidates
+        ],
+    }
+
+
+@app.get("/qcc-config")
+def get_qcc_config() -> dict:
+    return qcc_store.public_dict()
+
+
+@app.put("/qcc-config")
+def update_qcc_config(request: QccConfigInput) -> dict:
+    if run_manager.snapshot()["status"] in {"running", "pausing", "paused"}:
+        raise HTTPException(status_code=409, detail="任务运行中，不能切换工商 API 配置")
+    try:
+        return qcc_store.update(request)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
 @app.delete("/model-configs/{model_id}", status_code=204)

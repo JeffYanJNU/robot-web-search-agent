@@ -50,6 +50,13 @@ from app.services.product_rules import (
     classify_addition_type,
     normalize_product_name,
 )
+from app.services.qcc_fuzzy_search import (
+    QccApiError,
+    QccCompanyMatch,
+    QccFuzzySearchClient,
+    analyze_qcc_company_matches,
+    qcc_search_keywords,
+)
 from app.services.scoring import normalize_domain, source_kind
 from app.services.search import (
     SearchClient,
@@ -154,6 +161,7 @@ class ProductDiscoveryPipeline:
         self.search = SearchClient(settings)
         self.fetcher = PageFetcher(settings)
         self.extractor = ProductExtractor(settings)
+        self.qcc = QccFuzzySearchClient(settings)
 
     def run(
         self,
@@ -162,7 +170,12 @@ class ProductDiscoveryPipeline:
         max_queries: int,
         controller: PipelineController | None = None,
     ) -> RunResult:
-        output = RunResult()
+        qcc = self._qcc_client()
+        output = RunResult(
+            qcc_configured=qcc.configured,
+            qcc_provider=qcc.provider,
+            qcc_api_limit=qcc.max_calls,
+        )
         backfill_legacy_products(db)
         db.commit()
         aggregates: dict[str, ProductCandidateAggregate] = {}
@@ -649,6 +662,50 @@ class ProductDiscoveryPipeline:
                 company = similar.company if similar else None
             if company is not None and company.region_type != "mainland_china":
                 company = None
+            qcc_match = None
+            needs_registry_identity = (
+                company is None
+                or not str(company.unified_social_credit_code or "").strip()
+            )
+            if needs_registry_identity and relation_type in STRONG_RELATION_TYPES:
+                qcc_match = self._find_qcc_company_match(names, output)
+                if qcc_match is not None:
+                    qcc_identity = CompanyIdentityCandidate(
+                        names=(qcc_match.candidate.name, *names),
+                        unified_social_credit_code=qcc_match.candidate.credit_code,
+                    )
+                    registry_company = company_index.find_identity(qcc_identity)
+                    if registry_company is None:
+                        similar = company_index.find_identity_similar(
+                            qcc_identity,
+                            self.settings.database_duplicate_threshold,
+                        )
+                        registry_company = similar.company if similar else None
+                    if (
+                        registry_company is not None
+                        and registry_company.region_type == "mainland_china"
+                    ):
+                        company = registry_company
+                    if company is not None:
+                        candidate = qcc_match.candidate
+                        company.canonical_name = candidate.name
+                        if re.search(r"[\u4e00-\u9fff]", candidate.name):
+                            company.chinese_name = candidate.name
+                        if candidate.credit_code:
+                            company.unified_social_credit_code = candidate.credit_code
+                        if not company.registration_date:
+                            company.registration_date = self._parse_qcc_date(
+                                candidate.start_date
+                            )
+                        company.classification_reason = (
+                            "企业工商模糊搜索补全主体："
+                            f"{candidate.name}（名称相似度 {qcc_match.score:.2f}%）"
+                        )
+                        company.verification_reason = (
+                            "工商接口用于确认企业全称和统一社会信用代码；"
+                            "产品归属仍按网页关系证据核验"
+                        )
+                        company_index.upsert(company)
             if company is None:
                 can_create = (
                     relation_type in STRONG_RELATION_TYPES
@@ -658,24 +715,58 @@ class ProductDiscoveryPipeline:
                 )
                 if not can_create:
                     continue
+                qcc_candidate = qcc_match.candidate if qcc_match else None
+                canonical_name = qcc_candidate.name if qcc_candidate else names[0]
+                registration_date = self._parse_qcc_date(
+                    qcc_candidate.start_date if qcc_candidate else ""
+                )
+                qcc_summary = ""
+                if qcc_candidate:
+                    qcc_summary = (
+                        f"；企查查登记状态：{qcc_candidate.status or '未知'}"
+                        f"；法定代表人：{qcc_candidate.operator_name or '未知'}"
+                        f"；注册地址：{qcc_candidate.address or '未知'}"
+                    )
                 company = RobotCompany(
-                    canonical_name=names[0],
+                    canonical_name=canonical_name,
                     original_name=names[0],
-                    chinese_name=names[0] if re.search(r"[\u4e00-\u9fff]", names[0]) else "",
-                    english_name=names[0] if re.search(r"[A-Za-z]", names[0]) else "",
+                    chinese_name=canonical_name
+                    if re.search(r"[\u4e00-\u9fff]", canonical_name)
+                    else "",
+                    english_name=canonical_name
+                    if re.search(r"[A-Za-z]", canonical_name)
+                    else "",
                     country="中国",
                     region_type="mainland_china",
-                    company_summary=f"由产品 {product_name} 的关系证据发现",
+                    company_summary=(
+                        f"由产品 {product_name} 的关系证据发现{qcc_summary}"
+                    ),
                     robot_categories="[]",
                     representative_products=json.dumps(
                         [product_name], ensure_ascii=False
                     ),
                     discovery_signal="产品发布",
                     addition_type="系统首次发现",
-                    classification_reason="由产品与企业的明确关系证据发现",
+                    classification_reason=(
+                        (
+                            "企查查企业模糊搜索确认工商主体："
+                            f"{qcc_candidate.name}（名称相似度 {qcc_match.score:.2f}%）"
+                        )
+                        if qcc_candidate and qcc_match
+                        else "由产品与企业的明确关系证据发现"
+                    ),
+                    unified_social_credit_code=(
+                        qcc_candidate.credit_code if qcc_candidate else ""
+                    ),
+                    registration_date=registration_date,
                     robot_relevance=self.settings.min_robot_relevance,
                     has_robot_product=True,
                     verification_status="needs_review",
+                    verification_reason=(
+                        "企查查模糊搜索用于确认工商主体；产品归属仍按网页关系证据核验"
+                        if qcc_candidate
+                        else ""
+                    ),
                 )
                 db.add(company)
                 db.flush()
@@ -684,6 +775,140 @@ class ProductDiscoveryPipeline:
             resolved.append(ResolvedRelationGroup(company, relation_type, items))
             output.companies_linked += 1
         return resolved
+
+    def _qcc_client(self) -> QccFuzzySearchClient:
+        client = getattr(self, "qcc", None)
+        if client is None:
+            client = QccFuzzySearchClient(self.settings)
+            self.qcc = client
+        return client
+
+    def _find_qcc_company_match(
+        self,
+        names: tuple[str, ...],
+        output: RunResult,
+    ) -> QccCompanyMatch | None:
+        client = self._qcc_client()
+        output.qcc_configured = client.configured
+        output.qcc_provider = client.provider
+        output.qcc_api_limit = client.max_calls
+        if not client.enabled:
+            return None
+        keyword = next((name for name in names if str(name or "").strip()), "")
+        if not keyword:
+            return None
+        candidates = []
+        searched_keyword = keyword
+        empty_attempts: list[tuple[str, str, bool, str, str]] = []
+        for search_keyword in qcc_search_keywords(keyword):
+            searched_keyword = search_keyword
+            try:
+                candidates = client.search(search_keyword)
+            except QccApiError as exc:
+                output.qcc_api_errors += 1
+                message = f"企查查企业模糊搜索失败 [{search_keyword}]：{exc}"
+                if message not in output.errors:
+                    output.errors.append(message)
+                diagnostic = {
+                    "query_name": search_keyword,
+                    "candidate_name": "（工商接口未返回业务数据）",
+                    "credit_code": "",
+                    "similarity": 0.0,
+                    "accepted": False,
+                    "reason": f"拒绝：{exc}",
+                }
+                if (
+                    diagnostic not in output.qcc_match_diagnostics
+                    and len(output.qcc_match_diagnostics) < 500
+                ):
+                    output.qcc_match_diagnostics.append(diagnostic)
+                break
+            finally:
+                output.qcc_api_calls = client.calls_used
+                output.qcc_api_limit_reached = client.limit_reached
+            if candidates:
+                break
+            empty_attempts.append(
+                (
+                    search_keyword,
+                    client.last_response_shape or "响应结构未知",
+                    client.last_search_blocked,
+                    client.last_response_code,
+                    client.last_response_message,
+                )
+            )
+            if client.last_search_blocked:
+                break
+        output.qcc_candidates += len(candidates)
+        match, diagnostics = analyze_qcc_company_matches(
+            names,
+            candidates,
+            threshold=self.settings.qcc_company_match_threshold,
+        )
+        for (
+            attempted_keyword,
+            response_shape,
+            blocked,
+            response_code,
+            response_message,
+        ) in empty_attempts:
+            response_detail = "；".join(
+                item
+                for item in (
+                    f"状态码：{response_code}" if response_code else "",
+                    f"接口消息：{response_message}" if response_message else "",
+                )
+                if item
+            )
+            reason = (
+                f"拒绝：{response_shape}"
+                if blocked
+                else "拒绝：接口未返回可识别的工商候选；"
+                f"{response_detail + '；' if response_detail else ''}"
+                f"安全响应结构摘要：{response_shape}"
+            )
+            item = {
+                "query_name": attempted_keyword,
+                "candidate_name": "（无可识别工商候选）",
+                "credit_code": "",
+                "similarity": 0.0,
+                "accepted": False,
+                "reason": reason,
+            }
+            if (
+                item not in output.qcc_match_diagnostics
+                and len(output.qcc_match_diagnostics) < 500
+            ):
+                output.qcc_match_diagnostics.append(item)
+        for diagnostic in diagnostics:
+            item = {
+                "query_name": searched_keyword or diagnostic.query_name,
+                "candidate_name": diagnostic.candidate_name,
+                "credit_code": diagnostic.credit_code,
+                "similarity": round(diagnostic.similarity, 2),
+                "accepted": diagnostic.accepted,
+                "reason": diagnostic.reason,
+            }
+            if (
+                item not in output.qcc_match_diagnostics
+                and len(output.qcc_match_diagnostics) < 500
+            ):
+                output.qcc_match_diagnostics.append(item)
+        if match is not None:
+            output.qcc_matches += 1
+        else:
+            output.qcc_unmatched += 1
+        return match
+
+    @staticmethod
+    def _parse_qcc_date(value: str) -> date | None:
+        text = str(value or "").strip()
+        if not text:
+            return None
+        try:
+            return date.fromisoformat(text[:10])
+        except ValueError:
+            return None
 
     @staticmethod
     def _select_company_scoped_product(

@@ -36,7 +36,7 @@ GRID = "DDE3EC"
 
 MAIN_HEADERS = [
     "A｜机器人产品名称",
-    "B｜关联企业（简称 / 全称）",
+    "B｜关联企业（简称 / 工商全称 / 统一社会信用代码）",
     "C｜产品是否存在及依据",
     "D｜产品与企业是否对应及依据",
     "E｜与已有产品名称相似度",
@@ -73,6 +73,15 @@ DETAIL_HEADERS = [
     "任务模式",
     "任务统计",
     "生成时间",
+]
+
+QCC_DIAGNOSTIC_HEADERS = [
+    "查询企业名称",
+    "候选企业名称",
+    "统一社会信用代码",
+    "名称相似度",
+    "是否采用",
+    "采用 / 拒绝原因",
 ]
 
 
@@ -117,6 +126,8 @@ def resolve_company_names(company: RobotCompany) -> tuple[str, str, str]:
     full_name = next((name for name in candidates if LEGAL_SUFFIX.search(name)), "")
     if company.baseline_company_name and full_name == company.baseline_company_name:
         full_source = "Excel 企业基线"
+    elif company.unified_social_credit_code and full_name:
+        full_source = "企业工商 API 核验"
     elif full_name:
         full_source = "现有企业主体数据"
     else:
@@ -554,8 +565,23 @@ def export_run_results(
         f"有效产品候选 {result.product_candidates}；阶段入库 {result.products_staged}；"
         f"新增产品 {result.products_created}；更新产品 {result.products_updated}；"
         f"新增关系 {result.relations_created}；已核验关系 {result.relations_verified}；"
+        f"企业工商 API（{result.qcc_provider or '未配置'}）"
+        f" {result.qcc_api_calls}/{result.qcc_api_limit}；"
+        f"返回候选 {result.qcc_candidates}；工商主体命中 {result.qcc_matches}；"
+        f"未匹配查询 {result.qcc_unmatched}；接口错误 {result.qcc_api_errors}；"
         f"错误 {len(result.errors)}"
     )
+    qcc_diagnostic_rows = [
+        [
+            str(item.get("query_name") or ""),
+            str(item.get("candidate_name") or ""),
+            str(item.get("credit_code") or ""),
+            float(item.get("similarity") or 0) / 100.0,
+            "是" if item.get("accepted") else "否",
+            str(item.get("reason") or ""),
+        ]
+        for item in result.qcc_match_diagnostics
+    ]
 
     for product in products:
         product_evidence = _product_evidence(product)
@@ -572,7 +598,24 @@ def export_run_results(
             else:
                 short_name, full_name, full_source = "未识别", "待核验", "未识别到对应企业"
 
-            company_display = f"简称：{short_name}\n全称：{full_name}"
+            credit_code = (
+                company.unified_social_credit_code
+                if company and company.unified_social_credit_code
+                else "待工商核验"
+            )
+            verified_full_name = (
+                full_name
+                if company and (
+                    company.unified_social_credit_code
+                    or full_source in {"Excel 企业基线", "企业工商 API 核验"}
+                )
+                else f"{full_name}（待工商核验）"
+            )
+            company_display = (
+                f"简称：{short_name}\n"
+                f"工商全称：{verified_full_name}\n"
+                f"统一社会信用代码：{credit_code}"
+            )
             main_rows.append(
                 [
                     product.canonical_name,
@@ -651,6 +694,16 @@ def export_run_results(
         "ProductDetailsTable",
         row_height=100,
     )
+    diagnostic = _add_table_sheet(
+        workbook,
+        "工商候选诊断",
+        "企业工商模糊搜索候选、相似度与采用决定",
+        QCC_DIAGNOSTIC_HEADERS,
+        qcc_diagnostic_rows,
+        [24, 36, 24, 16, 12, 58],
+        "QccCandidateDiagnosticsTable",
+        row_height=42,
+    )
 
     if main_rows:
         last_main_row = len(main_rows) + 2
@@ -697,6 +750,29 @@ def export_run_results(
                     end_color=PALE_GREEN,
                 ),
             )
+    if qcc_diagnostic_rows:
+        last_diagnostic_row = len(qcc_diagnostic_rows) + 2
+        for row_index in range(3, last_diagnostic_row + 1):
+            diagnostic.cell(row_index, 4).number_format = "0.00%"
+            decision = diagnostic.cell(row_index, 5)
+            decision.fill = PatternFill(
+                "solid",
+                fgColor=PALE_GREEN if decision.value == "是" else PALE_AMBER,
+            )
+        diagnostic.conditional_formatting.add(
+            f"D3:D{last_diagnostic_row}",
+            ColorScaleRule(
+                start_type="num",
+                start_value=0,
+                start_color=PALE_RED,
+                mid_type="num",
+                mid_value=0.75,
+                mid_color=PALE_AMBER,
+                end_type="num",
+                end_value=1,
+                end_color=PALE_GREEN,
+            ),
+        )
 
     target_dir = Path(output_dir).expanduser()
     if not target_dir.is_absolute():

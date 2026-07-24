@@ -8,11 +8,13 @@ from sqlalchemy.orm import Session
 import app.main as main_module
 from app.config import Settings
 from app.database import Base
-from app.run_manager import RunManager
+from app.run_manager import RunManager, initial_run_result
+from app.schemas import RunRequest
 from app.services.fetcher import Page
 from app.services.model_api import test_model_api as run_model_api_test
 from app.services.model_config import ModelConfigStore
 from app.services.product_pipeline import ProductDiscoveryPipeline
+from app.services.qcc_fuzzy_search import QccCompanyCandidate
 from app.services.search import SearchResult
 
 
@@ -114,6 +116,62 @@ def test_run_start_is_blocked_when_inventory_workbook_is_missing(tmp_path, monke
     assert main_module.run_manager.snapshot()["status"] == "idle"
 
 
+def test_run_uses_selected_system_qcc_provider(monkeypatch):
+    base_settings = Settings(
+        tavily_api_key="env-tavily-key",
+        bing_api_key="env-bing-key",
+        qcc_airia_key="env-airia-key",
+        qcc_app_key="env-app-key",
+        qcc_secret_key="env-secret-key",
+    )
+
+    class FakeModelStore:
+        @staticmethod
+        def active_settings():
+            return base_settings
+
+    class FakeQccStore:
+        @staticmethod
+        def settings(active):
+            return active.model_copy(
+                update={
+                    "qcc_airia_key": "",
+                    "qcc_app_key": "saved-app-key",
+                    "qcc_secret_key": "saved-secret-key",
+                    "qcc_max_api_calls": 7,
+                }
+            )
+
+    monkeypatch.setattr(main_module, "model_store", FakeModelStore())
+    monkeypatch.setattr(main_module, "qcc_store", FakeQccStore())
+    request = RunRequest(
+        tavily_api_key="web-tavily-key",
+        bing_api_key="web-bing-key",
+    )
+
+    run_settings = main_module.settings_for_run(request)
+
+    assert run_settings.tavily_api_key == "web-tavily-key"
+    assert run_settings.bing_api_key == "web-bing-key"
+    assert run_settings.qcc_airia_key == ""
+    assert run_settings.qcc_app_key == "saved-app-key"
+    assert run_settings.qcc_secret_key == "saved-secret-key"
+    assert run_settings.qcc_max_api_calls == 7
+    assert "web-tavily-key" not in repr(request)
+    assert "web-bing-key" not in request.model_dump_json()
+
+
+def test_airia_configuration_is_visible_from_the_start_of_a_run():
+    result = initial_run_result(
+        Settings(qcc_airia_key="airia-key", qcc_max_api_calls=10)
+    )
+
+    assert result.qcc_configured is True
+    assert result.qcc_provider == "airia"
+    assert result.qcc_api_limit == 10
+    assert result.qcc_api_calls == 0
+
+
 def test_model_config_test_endpoint_returns_real_call_result(tmp_path, monkeypatch):
     store = ModelConfigStore(
         Settings(deepseek_api_key="secret", model_config_path=str(tmp_path / "models.json"))
@@ -139,6 +197,79 @@ def test_model_config_test_endpoint_returns_real_call_result(tmp_path, monkeypat
     assert response.status_code == 200
     assert response.json()["success"] is True
     assert response.json()["latency_ms"] == 123
+
+
+def test_qcc_test_endpoint_uses_web_key_and_returns_all_candidates(monkeypatch):
+    captured = {}
+
+    class FakeQccClient:
+        configured = True
+        provider = "airia"
+        calls_used = 0
+        last_response_code = "0"
+        last_response_message = "查询成功"
+        last_response_shape = "{code:number,data:{records:list[2]}}"
+
+        def __init__(self, settings):
+            captured["airia_key"] = settings.qcc_airia_key
+            captured["max_calls"] = settings.qcc_max_api_calls
+
+        def search(self, keyword):
+            captured["keyword"] = keyword
+            self.calls_used = 1
+            return [
+                QccCompanyCandidate(
+                    key_no="xiaomi-1",
+                    name="小米科技有限责任公司",
+                    credit_code="91110108551385082Q",
+                    status="存续",
+                    operator_name="雷军",
+                    address="北京市海淀区",
+                ),
+                QccCompanyCandidate(
+                    key_no="xiaomi-2",
+                    name="小米通讯技术有限公司",
+                    credit_code="91110108558521630L",
+                    status="存续",
+                ),
+            ]
+
+    class FakeQccStore:
+        @staticmethod
+        def settings(active):
+            return active.model_copy(
+                update={
+                    "qcc_airia_key": "saved-airia-secret",
+                    "qcc_app_key": "",
+                    "qcc_secret_key": "",
+                }
+            )
+
+    monkeypatch.setattr(main_module, "QccFuzzySearchClient", FakeQccClient)
+    monkeypatch.setattr(main_module, "qcc_store", FakeQccStore())
+
+    with TestClient(main_module.app) as client:
+        response = client.post(
+            "/qcc/test",
+            json={"keyword": " 小米 "},
+        )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["candidate_count"] == 2
+    assert payload["response_code"] == "0"
+    assert payload["response_message"] == "查询成功"
+    assert [item["name"] for item in payload["candidates"]] == [
+        "小米科技有限责任公司",
+        "小米通讯技术有限公司",
+    ]
+    assert payload["candidates"][0]["credit_code"] == "91110108551385082Q"
+    assert captured == {
+        "airia_key": "saved-airia-secret",
+        "max_calls": 1,
+        "keyword": "小米",
+    }
+    assert "saved-airia-secret" not in response.text
 
 
 def test_paused_run_is_not_resumed_when_model_is_still_unavailable(monkeypatch):

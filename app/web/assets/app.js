@@ -3,6 +3,7 @@ const state = {
   stats: {},
   run: null,
   models: { models: [], providers: [], active_id: "" },
+  qccConfig: null,
   products: [],
   companies: [],
   relations: [],
@@ -314,8 +315,11 @@ function renderOverviewRun(run) {
   const target = document.querySelector("#overviewRun");
   if (!target) return;
   const progress = runProgress(run);
+  const result = run.result || {};
+  const qccProvider = result.qcc_provider === "airia" ? "Airia" : "企查查官方";
+  const qccUsage = result.qcc_configured ? `${qccProvider} · ${result.qcc_api_calls || 0} / ${result.qcc_api_limit || 0}` : "未配置";
   target.className = "";
-  target.innerHTML = `<div class="run-summary"><div><span>任务状态</span><strong>${labels[run.status] || run.status}</strong></div><div><span>当前动作</span><strong>${esc(run.current_action || "—")}</strong></div><div><span>查询进度</span><strong>${run.query_index || 0} / ${run.max_queries || 0}</strong></div><div><span>产品新增</span><strong>${run.result?.products_created || 0}</strong></div></div><div class="progress-track"><i style="width:${progress}%"></i></div><div class="run-current">${esc(run.current_query || run.current_url || "当前没有正在执行的检索任务")}</div>`;
+  target.innerHTML = `<div class="run-summary"><div><span>任务状态</span><strong>${labels[run.status] || run.status}</strong></div><div><span>当前动作</span><strong>${esc(run.current_action || "—")}</strong></div><div><span>查询进度</span><strong>${run.query_index || 0} / ${run.max_queries || 0}</strong></div><div><span>企查查 API</span><strong>${qccUsage}</strong></div><div><span>产品新增</span><strong>${result.products_created || 0}</strong></div></div><div class="progress-track"><i style="width:${progress}%"></i></div><div class="run-current">${esc(run.current_query || run.current_url || "当前没有正在执行的检索任务")}</div>`;
 }
 
 function renderRun(run) {
@@ -324,10 +328,16 @@ function renderRun(run) {
   const active = ["running", "pausing", "paused"].includes(run.status);
   const progress = runProgress(run);
   const result = run.result || {};
+  const qccProvider = result.qcc_provider === "airia" ? "Airia" : "企查查官方";
+  const qccUsage = result.qcc_configured ? `${qccProvider} · ${result.qcc_api_calls || 0} / ${result.qcc_api_limit || 0}` : "未配置";
+  const qccDiagnostics = (result.qcc_match_diagnostics || []).slice(-20).reverse();
+  const qccDiagnosticsHtml = qccDiagnostics.length
+    ? qccDiagnostics.map((item) => `<div class="evidence-card"><strong>${esc(item.query_name)} → ${esc(item.candidate_name)}</strong><span class="cell-sub">名称相似度 ${Number(item.similarity || 0).toFixed(2)}% · ${item.accepted ? "已采用" : "未采用"}${item.credit_code ? ` · ${esc(item.credit_code)}` : ""}</span><p>${esc(item.reason)}</p></div>`).join("")
+    : '<div class="empty-block">尚无工商候选诊断记录</div>';
   target.className = "";
   target.innerHTML = `
     ${run.auto_pause_reason ? `<div class="notice error">${esc(run.auto_pause_reason)}。请先在系统设置中测试或切换模型，然后点击“继续”。</div>` : ""}
-    <div class="run-summary"><div><span>状态</span><strong>${labels[run.status] || run.status}</strong></div><div><span>检索模式</span><strong>${run.pipeline_mode === "product" ? "产品专项" : "企业发现"}</strong></div><div><span>查询进度</span><strong>${run.query_index || 0} / ${run.max_queries || 0}</strong></div><div><span>抓取网页</span><strong>${result.fetched || 0}</strong></div><div><span>原始产品候选</span><strong>${result.raw_product_candidates || 0}</strong></div><div><span>自动修复候选</span><strong>${result.repaired_product_candidates || 0}</strong></div><div><span>有效产品候选</span><strong>${result.product_candidates || 0}</strong></div><div><span>阶段入库</span><strong>${result.products_staged || 0}</strong></div><div><span>产品新增</span><strong>${result.products_created || 0}</strong></div><div><span>证据淘汰</span><strong>${result.product_evidence_rejected || 0}</strong></div><div><span>关系新增</span><strong>${result.relations_created || 0}</strong></div><div><span>错误</span><strong>${(result.errors || []).length}</strong></div></div>
+    <div class="run-summary"><div><span>状态</span><strong>${labels[run.status] || run.status}</strong></div><div><span>检索模式</span><strong>${run.pipeline_mode === "product" ? "产品专项" : "企业发现"}</strong></div><div><span>查询进度</span><strong>${run.query_index || 0} / ${run.max_queries || 0}</strong></div><div><span>抓取网页</span><strong>${result.fetched || 0}</strong></div><div><span>原始产品候选</span><strong>${result.raw_product_candidates || 0}</strong></div><div><span>自动修复候选</span><strong>${result.repaired_product_candidates || 0}</strong></div><div><span>有效产品候选</span><strong>${result.product_candidates || 0}</strong></div><div><span>阶段入库</span><strong>${result.products_staged || 0}</strong></div><div><span>产品新增</span><strong>${result.products_created || 0}</strong></div><div><span>证据淘汰</span><strong>${result.product_evidence_rejected || 0}</strong></div><div><span>关系新增</span><strong>${result.relations_created || 0}</strong></div><div><span>工商查询 API</span><strong>${qccUsage}</strong></div><div><span>返回工商候选</span><strong>${result.qcc_candidates || 0}</strong></div><div><span>工商主体命中</span><strong>${result.qcc_matches || 0}</strong></div><div><span>未匹配查询</span><strong>${result.qcc_unmatched || 0}</strong></div><div><span>工商接口错误</span><strong>${result.qcc_api_errors || 0}</strong></div><div><span>错误</span><strong>${(result.errors || []).length}</strong></div></div>
     <div class="progress-track"><i style="width:${progress}%"></i></div>
     <div class="run-current">${esc(run.current_action || "—")} · ${esc(run.current_query || run.current_url || "暂无当前项目")}</div>
     <div class="run-controls">
@@ -335,7 +345,8 @@ function renderRun(run) {
       <button class="button secondary small" data-run-action="resume" ${!["paused", "pausing"].includes(run.status) ? "disabled" : ""}>继续</button>
       <button class="button danger small" data-run-action="cancel" ${!active ? "disabled" : ""}>安全停止</button>
       ${result.output_filename ? `<a class="download" href="/outputs/${encodeURIComponent(result.output_filename)}">下载本次 Excel</a>` : ""}
-    </div>`;
+    </div>
+    <div class="detail-section"><h4>工商候选诊断（最近 20 条）</h4>${qccDiagnosticsHtml}</div>`;
   const logs = run.logs || [];
   document.querySelector("#runLogs").innerHTML = logs.length ? logs.slice().reverse().map((item) => `<div class="log-line"><time>${esc((item.time || "").slice(11, 19))}</time><span>${esc(item.message)}</span></div>`).join("") : '<div class="empty">暂无任务日志</div>';
   renderAnalysis(run.analysis);
@@ -451,6 +462,53 @@ async function loadDuplicates() {
   document.querySelector("#duplicatesTable").innerHTML = items.length ? items.map((item) => `<tr><td><span class="cell-title">${esc(item.candidate_name)}</span><span class="cell-sub">${esc(item.candidate_original_name || "")}</span></td><td>${esc(item.matched_company_name)}</td><td>${score(item.similarity)}</td><td>${esc(item.match_method)}</td><td>${formatDate(item.detected_at, true)}</td><td>${item.source_url ? `<a class="download" href="${safeUrl(item.source_url)}" target="_blank" rel="noreferrer">来源 ↗</a>` : "—"}</td></tr>`).join("") : emptyRow(6, "暂无相似企业候选");
 }
 
+function toggleQccProvider() {
+  const provider = document.querySelector("#qccProviderMode").value;
+  document.querySelectorAll("[data-qcc-provider]").forEach((node) => {
+    node.classList.toggle("hidden", node.dataset.qccProvider !== provider);
+  });
+}
+
+async function loadQccConfig() {
+  state.qccConfig = await api("/qcc-config");
+  const form = document.querySelector("#qccConfigForm");
+  form.elements.provider.value = state.qccConfig.provider;
+  form.elements.max_api_calls.value = state.qccConfig.max_api_calls;
+  form.elements.airia_key.value = "";
+  form.elements.app_key.value = "";
+  form.elements.secret_key.value = "";
+  form.elements.airia_key.placeholder = state.qccConfig.airia_key_configured ? "已配置；留空将保留原 Key" : "填写请求 Header 中的 key";
+  form.elements.app_key.placeholder = state.qccConfig.app_key_configured ? "已配置；留空将保留原 App Key" : "企查查开放平台 App Key";
+  form.elements.secret_key.placeholder = state.qccConfig.secret_key_configured ? "已配置；留空将保留原 Secret Key" : "企查查开放平台 Secret Key";
+  toggleQccProvider();
+}
+
+async function saveQccConfig(event) {
+  event.preventDefault();
+  const form = event.currentTarget;
+  const submit = form.querySelector('[type="submit"]');
+  const original = submit.textContent;
+  submit.disabled = true;
+  submit.textContent = "保存中…";
+  try {
+    state.qccConfig = await api("/qcc-config", {
+      method: "PUT",
+      body: {
+        provider: form.elements.provider.value,
+        airia_key: form.elements.airia_key.value.trim() || null,
+        app_key: form.elements.app_key.value.trim() || null,
+        secret_key: form.elements.secret_key.value.trim() || null,
+        max_api_calls: Number(form.elements.max_api_calls.value),
+      },
+    });
+    toast(state.qccConfig.provider === "airia" ? "已启用 Airia 模式" : "已启用企查查官方直连模式");
+    await loadQccConfig();
+  } finally {
+    submit.disabled = false;
+    submit.textContent = original;
+  }
+}
+
 async function loadView(name) {
   showNotice();
   try {
@@ -459,7 +517,7 @@ async function loadView(name) {
     if (name === "companies") await loadCompanies();
     if (name === "relations") await loadRelations();
     if (name === "runs") await loadRun();
-    if (name === "settings") await Promise.all([loadModels(), loadOutputs(), loadDuplicates()]);
+    if (name === "settings") await Promise.all([loadModels(), loadQccConfig(), loadOutputs(), loadDuplicates()]);
   } catch (error) {
     showNotice(error.message, true);
   }
@@ -480,6 +538,8 @@ async function submitTask(event) {
     search_mode: form.elements.search_mode.value,
     search_providers: providers,
     inventory_workbook_path: form.elements.inventory_workbook_path.value.trim(),
+    tavily_api_key: form.elements.tavily_api_key.value.trim() || null,
+    bing_api_key: form.elements.bing_api_key.value.trim() || null,
   };
   const submit = form.querySelector('[type="submit"]');
   const original = submit.textContent;
@@ -494,6 +554,42 @@ async function submitTask(event) {
   } finally {
     submit.disabled = false;
     submit.textContent = original;
+  }
+}
+
+async function testQccApi(button) {
+  const form = document.querySelector("#qccConfigForm");
+  const keyword = form.elements.qcc_test_keyword.value.trim();
+  if (!keyword) {
+    toast("请先输入要测试的企业名称", "error");
+    form.elements.qcc_test_keyword.focus();
+    return;
+  }
+  const resultNode = document.querySelector("#qccTestResult");
+  const original = button.textContent;
+  button.disabled = true;
+  button.textContent = "查询中…";
+  resultNode.className = "empty-block";
+  resultNode.textContent = "正在调用企业工商查询 API…";
+  try {
+    const result = await api("/qcc/test", {
+      method: "POST",
+      body: { keyword },
+    });
+    const provider = result.provider === "airia" ? "Airia" : "企查查官方";
+    const candidates = result.candidates || [];
+    const responseStatus = [result.response_code ? `状态码 ${esc(result.response_code)}` : "", result.response_message ? esc(result.response_message) : ""].filter(Boolean).join(" · ");
+    resultNode.className = "qcc-test-result";
+    resultNode.innerHTML = candidates.length
+      ? `<div class="cell-sub">${esc(provider)} · 调用 ${Number(result.api_calls || 0)} 次 · 返回 ${candidates.length} 家${responseStatus ? ` · ${responseStatus}` : ""}</div>${candidates.map((item, index) => `<div class="evidence-card"><strong>${index + 1}. ${esc(item.name)}</strong><span class="cell-sub">${item.credit_code ? `统一社会信用代码：${esc(item.credit_code)}` : "无统一社会信用代码"}${item.status ? ` · ${esc(item.status)}` : ""}</span>${item.operator_name ? `<p>法定代表人：${esc(item.operator_name)}</p>` : ""}${item.start_date ? `<p>成立日期：${esc(item.start_date)}</p>` : ""}${item.address ? `<p>注册地址：${esc(item.address)}</p>` : ""}</div>`).join("")}`
+      : `<div class="empty-block">${esc(provider)} 已调用，但“${esc(result.keyword)}”没有返回可识别的企业候选。${responseStatus ? `<br><strong>${responseStatus}</strong>` : ""}<br><span class="cell-sub">响应结构：${esc(result.response_shape || "未知")}</span></div>`;
+  } catch (error) {
+    resultNode.className = "empty-block";
+    resultNode.textContent = `测试失败：${error.message}`;
+    throw error;
+  } finally {
+    button.disabled = false;
+    button.textContent = original;
   }
 }
 
@@ -533,6 +629,8 @@ document.addEventListener("click", async (event) => {
     if (company) showCompany(company.dataset.companyId);
     if (relation) showRelation(relation.dataset.relationId);
     if (run) await runAction(run.dataset.runAction);
+    const qccTest = event.target.closest("#testQccApi");
+    if (qccTest) await testQccApi(qccTest);
     const test = event.target.closest("[data-test-model]");
     if (test) await testModel(test, test.dataset.testModel);
     const activate = event.target.closest("[data-activate-model]");
@@ -546,6 +644,8 @@ document.addEventListener("click", async (event) => {
 
 document.querySelector("#taskForm").addEventListener("submit", (event) => submitTask(event).catch((error) => toast(error.message, "error")));
 document.querySelector("#modelForm").addEventListener("submit", (event) => saveModel(event).catch((error) => toast(error.message, "error")));
+document.querySelector("#qccConfigForm").addEventListener("submit", (event) => saveQccConfig(event).catch((error) => toast(error.message, "error")));
+document.querySelector("#qccProviderMode").addEventListener("change", toggleQccProvider);
 document.querySelector("#modelProvider").addEventListener("change", (event) => applyProviderPreset(event.target.value));
 document.querySelector("#filterProducts").addEventListener("click", () => loadProducts().catch((error) => toast(error.message, "error")));
 document.querySelector("#filterCompanies").addEventListener("click", () => loadCompanies().catch((error) => toast(error.message, "error")));

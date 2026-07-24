@@ -238,6 +238,27 @@ def test_exporter_writes_six_column_main_sheet_and_detail_sheet(tmp_path, monkey
             queries=3,
             results=8,
             fetched=2,
+            qcc_candidates=2,
+            qcc_matches=1,
+            qcc_unmatched=1,
+            qcc_match_diagnostics=[
+                {
+                    "query_name": "优必选",
+                    "candidate_name": "深圳市优必选科技股份有限公司",
+                    "credit_code": "91440300TEST000001",
+                    "similarity": 96.0,
+                    "accepted": True,
+                    "reason": "采用：企业简称与工商全称高度相似",
+                },
+                {
+                    "query_name": "优必选",
+                    "candidate_name": "北京其他机器人科技有限公司",
+                    "credit_code": "91110000TEST000002",
+                    "similarity": 35.0,
+                    "accepted": False,
+                    "reason": "拒绝：名称相似度 35.00% 低于阈值 75.00%",
+                },
+            ],
         )
         path = export_run_results(
             db,
@@ -250,13 +271,13 @@ def test_exporter_writes_six_column_main_sheet_and_detail_sheet(tmp_path, monkey
         )
 
     workbook = load_workbook(path, data_only=False)
-    assert workbook.sheetnames == ["结果主表", "详细信息"]
+    assert workbook.sheetnames == ["结果主表", "详细信息", "工商候选诊断"]
 
     main = workbook["结果主表"]
     assert main.max_column == 6
     assert [main.cell(2, column).value for column in range(1, 7)] == [
         "A｜机器人产品名称",
-        "B｜关联企业（简称 / 全称）",
+        "B｜关联企业（简称 / 工商全称 / 统一社会信用代码）",
         "C｜产品是否存在及依据",
         "D｜产品与企业是否对应及依据",
         "E｜与已有产品名称相似度",
@@ -264,7 +285,8 @@ def test_exporter_writes_six_column_main_sheet_and_detail_sheet(tmp_path, monkey
     ]
     assert main["A3"].value == "Walker S2"
     assert "简称：优必选" in main["B3"].value
-    assert "全称：深圳市优必选科技股份有限公司" in main["B3"].value
+    assert "工商全称：深圳市优必选科技股份有限公司" in main["B3"].value
+    assert "统一社会信用代码：91440300TEST000001" in main["B3"].value
     assert "产品存在" in main["C3"].value
     assert "明确归属" in main["D3"].value
     assert main["E3"].value == 1
@@ -286,7 +308,22 @@ def test_exporter_writes_six_column_main_sheet_and_detail_sheet(tmp_path, monkey
     ).value
     assert "权重 25" in detail.cell(3, headers["产品评分依据"]).value
     assert "Excel 企业基线" == detail.cell(3, headers["企业全称来源"]).value
+    assert (
+        "91440300TEST000001"
+        == detail.cell(3, headers["统一社会信用代码"]).value
+    )
     assert len(detail.tables) == 1
+
+    diagnostic = workbook["工商候选诊断"]
+    assert diagnostic.max_row == 4
+    assert diagnostic["A3"].value == "优必选"
+    assert diagnostic["B3"].value == "深圳市优必选科技股份有限公司"
+    assert diagnostic["C3"].value == "91440300TEST000001"
+    assert diagnostic["D3"].value == 0.96
+    assert diagnostic["D3"].number_format == "0.00%"
+    assert diagnostic["E3"].value == "是"
+    assert diagnostic["F4"].value.startswith("拒绝：")
+    assert len(diagnostic.tables) == 1
 
     monkeypatch.setattr(main_module.settings, "output_dir", str(tmp_path))
     files = main_module.list_output_files()

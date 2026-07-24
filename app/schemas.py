@@ -1,8 +1,8 @@
 import json
 from datetime import date, datetime
-from typing import Literal
+from typing import Any, Literal
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, SecretStr, field_validator
 
 
 class RunRequest(BaseModel):
@@ -12,10 +12,30 @@ class RunRequest(BaseModel):
     search_providers: list[Literal["tavily", "bing"]] | None = Field(default=None, min_length=1)
     pipeline_mode: Literal["product", "company"] = "product"
     inventory_workbook_path: str | None = Field(default=None, max_length=2000)
+    tavily_api_key: SecretStr | None = Field(default=None, max_length=1000, repr=False)
+    bing_api_key: SecretStr | None = Field(default=None, max_length=1000, repr=False)
 
-    @field_validator("inventory_workbook_path", mode="before")
+    @field_validator(
+        "inventory_workbook_path",
+        "tavily_api_key",
+        "bing_api_key",
+        mode="before",
+    )
     @classmethod
-    def strip_inventory_workbook_path(cls, value: object) -> str | None:
+    def strip_optional_run_text(cls, value: object) -> str | None:
+        if value is None:
+            return None
+        raw_value = value.get_secret_value() if isinstance(value, SecretStr) else value
+        stripped = str(raw_value).strip()
+        return stripped or None
+
+
+class QccTestRequest(BaseModel):
+    keyword: str = Field(min_length=1, max_length=200)
+
+    @field_validator("keyword", mode="before")
+    @classmethod
+    def strip_qcc_test_text(cls, value: object) -> str | None:
         if value is None:
             return None
         stripped = str(value).strip()
@@ -135,6 +155,16 @@ class RunResult(BaseModel):
     relations_verified: int = 0
     companies_created: int = 0
     companies_linked: int = 0
+    qcc_configured: bool = False
+    qcc_provider: str = ""
+    qcc_api_limit: int = 0
+    qcc_api_calls: int = 0
+    qcc_candidates: int = 0
+    qcc_matches: int = 0
+    qcc_unmatched: int = 0
+    qcc_match_diagnostics: list[dict[str, Any]] = Field(default_factory=list)
+    qcc_api_errors: int = 0
+    qcc_api_limit_reached: bool = False
     product_duplicates: int = 0
     product_ids: list[int] = Field(default_factory=list)
     company_ids: list[int] = Field(default_factory=list)

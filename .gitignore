@@ -1,6 +1,8 @@
 .env
 model_configs.json
 model_configs.json.tmp
+qcc_config.json
+qcc_config.json.tmp
 .venv/
 __pycache__/
 .pytest_cache/
